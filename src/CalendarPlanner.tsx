@@ -19,6 +19,8 @@ import {
   FileUp,
   ChevronDown,
   ChevronUp,
+  Globe,
+  Link as LinkIcon,
 } from "lucide-react";
 
 /* ───────── utils ───────── */
@@ -45,7 +47,7 @@ const hexToRgba = (hex: string, a = 1) => {
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 };
 
-const STORAGE_KEY = "MCP_v11";
+const STORAGE_KEY = "MCP_v13";
 
 /* ───────── component ───────── */
 const CalendarPlanner: React.FC = () => {
@@ -73,21 +75,28 @@ const CalendarPlanner: React.FC = () => {
   const [borderEnabled, setBorderEnabled] = useState(true);
   const [fontScale, setFontScale] = useState(1.0);
 
+  /* ✅ 페이지 배경 그라데이션(추가) */
+  const [gradientStart, setGradientStart] = useState("#667eea");
+  const [gradientEnd, setGradientEnd] = useState("#764ba2");
+
   /* containers background */
   const [decorCardBgColor, setDecorCardBgColor] = useState("#f3f4f6");
   const [decorCardBgImg, setDecorCardBgImg] = useState("");
-
   const [timeCardBgColor, setTimeCardBgColor] = useState("#f3f4f6");
   const [timeCardBgImg, setTimeCardBgImg] = useState("");
-
   const [todoBgColor, setTodoBgColor] = useState("#f3f4f6");
   const [todoBgImg, setTodoBgImg] = useState("");
-
   const [calendarBgColor, setCalendarBgColor] = useState("#ffffff");
   const [calendarBgImg, setCalendarBgImg] = useState("");
 
   /* holidays (simple manual) */
   const [holidayText, setHolidayText] = useState(""); // YYYY-MM-DD, 공백/줄바꿈/쉼표 구분
+
+  /* ✅ 구글 캘린더(ICS) 연동 상태(추가) */
+  const [gcalIcsUrl, setGcalIcsUrl] = useState(
+    "https://calendar.google.com/calendar/ical/ko.south_korea%23holiday%40group.v.calendar.google.com/public/basic.ics"
+  );
+  const [isImportingIcs, setIsImportingIcs] = useState(false);
 
   /* UI */
   const [showSettings, setShowSettings] = useState(false);
@@ -97,10 +106,11 @@ const CalendarPlanner: React.FC = () => {
   const refGlobalBg = useRef<HTMLInputElement>(null);
   const refHeaderImg = useRef<HTMLInputElement>(null);
   const refDecorImg = useRef<HTMLInputElement>(null);
-  const refTimeImg = useRef<HTMLInputElement>(null);
+  thead: const refTimeImg = useRef<HTMLInputElement>(null);
   const refTodoImg = useRef<HTMLInputElement>(null);
   const refCalImg = useRef<HTMLInputElement>(null);
   const refImportJson = useRef<HTMLInputElement>(null);
+  const refIcsFile = useRef<HTMLInputElement>(null);
 
   /* clock */
   useEffect(() => {
@@ -108,7 +118,7 @@ const CalendarPlanner: React.FC = () => {
     return () => clearInterval(t);
   }, []);
 
-  /* load/auto-save */
+  /* load */
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -130,6 +140,9 @@ const CalendarPlanner: React.FC = () => {
       setBorderEnabled(d.borderEnabled ?? true);
       setFontScale(d.fontScale ?? 1.0);
 
+      setGradientStart(d.gradientStart ?? "#667eea"); // ✅ restore
+      setGradientEnd(d.gradientEnd ?? "#764ba2");     // ✅ restore
+
       setDecorCardBgColor(d.decorCardBgColor ?? "#f3f4f6");
       setDecorCardBgImg(d.decorCardBgImg ?? "");
       setTimeCardBgColor(d.timeCardBgColor ?? "#f3f4f6");
@@ -139,11 +152,15 @@ const CalendarPlanner: React.FC = () => {
       setCalendarBgColor(d.calendarBgColor ?? "#ffffff");
       setCalendarBgImg(d.calendarBgImg ?? "");
       setHolidayText(d.holidayText ?? "");
+
+      setGcalIcsUrl(d.gcalIcsUrl ?? gcalIcsUrl); // ✅ restore
     } catch {
       /* ignore */
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /* auto-save */
   useEffect(() => {
     const payload = {
       events,
@@ -159,6 +176,8 @@ const CalendarPlanner: React.FC = () => {
       borderRadius,
       borderEnabled,
       fontScale,
+      gradientStart, // ✅ save
+      gradientEnd,   // ✅ save
       decorCardBgColor,
       decorCardBgImg,
       timeCardBgColor,
@@ -168,6 +187,7 @@ const CalendarPlanner: React.FC = () => {
       calendarBgColor,
       calendarBgImg,
       holidayText,
+      gcalIcsUrl, // ✅ save
     };
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
@@ -188,6 +208,8 @@ const CalendarPlanner: React.FC = () => {
     borderRadius,
     borderEnabled,
     fontScale,
+    gradientStart,
+    gradientEnd,
     decorCardBgColor,
     decorCardBgImg,
     timeCardBgColor,
@@ -197,6 +219,7 @@ const CalendarPlanner: React.FC = () => {
     calendarBgColor,
     calendarBgImg,
     holidayText,
+    gcalIcsUrl,
   ]);
 
   /* helpers */
@@ -235,6 +258,101 @@ const CalendarPlanner: React.FC = () => {
     window.location.reload();
   };
 
+  /* ───────── ICS -> events (Google Calendar 등) ───────── */
+  type IcsEvent = { dtstart?: string; summary?: string };
+  const parseICS = (txt: string): IcsEvent[] => {
+    const out: IcsEvent[] = [];
+    const lines = txt.replace(/\r/g, "").split("\n");
+    let cur: IcsEvent | null = null;
+    for (const line of lines) {
+      if (line === "BEGIN:VEVENT") cur = {};
+      else if (line === "END:VEVENT") {
+        if (cur && cur.dtstart) out.push(cur);
+        cur = null;
+      } else if (cur) {
+        if (line.startsWith("DTSTART")) cur.dtstart = line.split(":").pop() || "";
+        if (line.startsWith("SUMMARY"))
+          cur.summary = line.split(":").slice(1).join(":").trim();
+      }
+    }
+    return out;
+  };
+
+  const toLocalDateFromIcs = (v?: string) => {
+    if (!v) return null;
+    // YYYYMMDD or YYYYMMDDTHHMMSSZ or with TZ
+    if (/^\d{8}$/.test(v)) {
+      const y = +v.slice(0, 4);
+      const m = +v.slice(4, 6) - 1;
+      const d = +v.slice(6, 8);
+      return new Date(y, m, d, 12, 0, 0); // all-day: middle of day to avoid tz issues
+    }
+    const iso = v
+      .replace(/(\d{8})T(\d{6})Z?/, (m, d8, t6) => {
+        const y = d8.slice(0, 4);
+        const m2 = d8.slice(4, 6);
+        const d2 = d8.slice(6, 8);
+        const h = t6.slice(0, 2);
+        const mi = t6.slice(2, 4);
+        const s = t6.slice(4, 6);
+        return `${y}-${m2}-${d2}T${h}:${mi}:${s}Z`;
+      })
+      .replace(/(\d{8})T(\d{6})$/, (m, d8, t6) => {
+        const y = d8.slice(0, 4);
+        const m2 = d8.slice(4, 6);
+        const d2 = d8.slice(6, 8);
+        const h = t6.slice(0, 2);
+        const mi = t6.slice(2, 4);
+        const s = t6.slice(4, 6);
+        return `${y}-${m2}-${d2}T${h}:${mi}:${s}`;
+      });
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? null : d;
+  };
+
+  const importEventsFromICSString = (txt: string) => {
+    const list = parseICS(txt);
+    let added = 0;
+    const next: Record<string, TEvent[]> = { ...events };
+    for (const item of list) {
+      const dt = toLocalDateFromIcs(item.dtstart);
+      if (!dt) continue;
+      const k = dateKey(dt);
+      const text = item.summary || "이벤트";
+      const ev: TEvent = { id: Date.now() + Math.floor(Math.random() * 1e6), text, color: accentColor };
+      next[k] = [...(next[k] || []), ev];
+      added++;
+    }
+    setEvents(next);
+    return added;
+  };
+
+  const importIcsFromUrl = async () => {
+    if (!gcalIcsUrl) return;
+    setIsImportingIcs(true);
+    try {
+      const res = await fetch(gcalIcsUrl);
+      if (!res.ok) throw new Error(String(res.status));
+      const txt = await res.text();
+      const n = importEventsFromICSString(txt);
+      alert(`${n}개의 이벤트를 불러왔습니다.`);
+    } catch (e) {
+      alert("불러오기 실패(CORS 또는 URL 확인). .ics 파일 업로드를 사용해보세요.");
+    } finally {
+      setIsImportingIcs(false);
+    }
+  };
+
+  const importIcsFromFile = (file: File) => {
+    const r = new FileReader();
+    r.onload = (e) => {
+      const txt = String(e.target?.result || "");
+      const n = importEventsFromICSString(txt);
+      alert(`${n}개의 이벤트를 불러왔습니다.`);
+    };
+    r.readAsText(file, "utf-8");
+  };
+
   /* calendar */
   const calendarDays = useMemo(() => {
     const first = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
@@ -253,7 +371,7 @@ const CalendarPlanner: React.FC = () => {
   }, [holidayText]);
 
   /* CRUD */
-  const addEvent = () => {
+  const addEventLocal = () => {
     const text = newEvent.trim();
     if (!text) return;
     const k = dateKey(selectedDate);
@@ -263,7 +381,7 @@ const CalendarPlanner: React.FC = () => {
     }));
     setNewEvent("");
   };
-  const deleteEvent = (k: string, id: number) => {
+  const deleteEventLocal = (k: string, id: number) => {
     setEvents((p) => ({ ...p, [k]: (p[k] || []).filter((e) => e.id !== id) }));
   };
   const editEventText = (k: string, id: number, text: string) => {
@@ -274,7 +392,7 @@ const CalendarPlanner: React.FC = () => {
     setEditingEvent(null);
   };
 
-  const addTodo = () => {
+  const addTodoLocal = () => {
     const text = newTodo.trim();
     if (!text) return;
     setTodos((p) => [...p, { id: Date.now(), text, completed: false, color: accentColor }]);
@@ -341,7 +459,7 @@ const CalendarPlanner: React.FC = () => {
       style={{
         backgroundImage: backgroundImage
           ? `url(${backgroundImage})`
-          : "linear-gradient(135deg,#667eea,#764ba2)",
+          : `linear-gradient(135deg, ${gradientStart}, ${gradientEnd})`, // ✅ gradient
         backgroundSize: "cover",
         backgroundAttachment: "fixed",
         fontSize: `${fontScale}rem`,
@@ -363,7 +481,7 @@ const CalendarPlanner: React.FC = () => {
           <div className="col-span-12 lg:col-span-4 space-y-4">
             {/* 꾸미기 컨테이너 */}
             <div className="p-4 shadow" style={decorStyle}>
-              <p className="text-sm opacity-70"></p>
+              <p className="text-sm opacity-70">꾸미기 공간</p>
             </div>
 
             {/* 현재시각 컨테이너 */}
@@ -385,13 +503,13 @@ const CalendarPlanner: React.FC = () => {
                 <input
                   value={newTodo}
                   onChange={(e) => setNewTodo(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && addTodo()}
+                  onKeyDown={(e) => e.key === "Enter" && addTodoLocal()}
                   placeholder="새 할 일…"
                   className="flex-1 px-3 py-2 bg-white/95"
                   style={{ border, borderRadius }}
                 />
                 <button
-                  onClick={addTodo}
+                  onClick={addTodoLocal}
                   className="px-3 py-2 text-white"
                   style={{ backgroundColor: accentColor, border, borderRadius }}
                 >
@@ -547,13 +665,13 @@ const CalendarPlanner: React.FC = () => {
                 <input
                   value={newEvent}
                   onChange={(e) => setNewEvent(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && addEvent()}
+                  onKeyDown={(e) => e.key === "Enter" && addEventLocal()}
                   placeholder="새 일정…"
                   className="flex-1 px-3 py-2 bg-white"
                   style={{ border, borderRadius }}
                 />
                 <button
-                  onClick={addEvent}
+                  onClick={addEventLocal}
                   className="px-3 py-2 text-white"
                   style={{ backgroundColor: accentColor, border, borderRadius }}
                 >
@@ -596,7 +714,7 @@ const CalendarPlanner: React.FC = () => {
                       <Edit3 size={12} />
                     </button>
                     <button
-                      onClick={() => deleteEvent(selectedKey, ev.id)}
+                      onClick={() => deleteEventLocal(selectedKey, ev.id)}
                       className="p-1 text-red-700 hover:bg-red-50"
                       style={{ border, borderRadius }}
                     >
@@ -632,7 +750,7 @@ const CalendarPlanner: React.FC = () => {
               {/* 빠른 동작 */}
               <div className="grid gap-2 md:grid-cols-4">
                 <button
-                  onClick={() => alert("자동 저장됩니다! (변경 시 로컬 스토리지에 반영)")}
+                  onClick={() => alert("변경 시 자동 저장됩니다. (로컬 저장소)")}
                   className="px-2 py-2 bg-gray-100 hover:bg-gray-200"
                   style={{ border, borderRadius }}
                 >
@@ -728,7 +846,26 @@ const CalendarPlanner: React.FC = () => {
                   </div>
                 </div>
 
+                {/* ✅ 페이지 배경: 이미지/그라데이션 색 */}
                 <div className="grid grid-cols-2 gap-2">
+                  <div className="flex items-center gap-2 p-2" style={{ border, borderRadius }}>
+                    <span>그라데이션 시작</span>
+                    <input
+                      type="color"
+                      value={gradientStart}
+                      onChange={(e) => setGradientStart(e.target.value)}
+                      className="w-7 h-7 cursor-pointer ml-auto"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2 p-2" style={{ border, borderRadius }}>
+                    <span>그라데이션 끝</span>
+                    <input
+                      type="color"
+                      value={gradientEnd}
+                      onChange={(e) => setGradientEnd(e.target.value)}
+                      className="w-7 h-7 cursor-pointer ml-auto"
+                    />
+                  </div>
                   <div className="flex items-center gap-2 p-2 col-span-2" style={{ border, borderRadius }}>
                     <span>전체 배경 이미지</span>
                     <button
@@ -752,7 +889,7 @@ const CalendarPlanner: React.FC = () => {
                 </div>
               </div>
 
-              {/* 헤더 설정 (이 패널 안) */}
+              {/* 헤더 설정 */}
               <div className="grid gap-2 md:grid-cols-2">
                 <div className="grid grid-cols-2 gap-2">
                   <div className="p-2 col-span-2" style={{ border, borderRadius }}>
@@ -965,8 +1102,49 @@ const CalendarPlanner: React.FC = () => {
                   placeholder="예) 2025-01-01, 2025-03-01  2025-05-05"
                 />
                 <p className="text-[11px] mt-1 opacity-70">
-                  일요일은 자동으로 빨간색, 토요일은 파란색으로 표시됩니다.
+                  일요일은 자동 빨간색, 토요일은 파란색으로 표시됩니다.
                 </p>
+              </div>
+
+              {/* ✅ Google Calendar(ICS) 이벤트 불러오기 */}
+              <div className="grid gap-2 md:grid-cols-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="flex items-center gap-2 p-2 col-span-2" style={{ border, borderRadius }}>
+                    <LinkIcon size={14} />
+                    <input
+                      type="text"
+                      value={gcalIcsUrl}
+                      onChange={(e) => setGcalIcsUrl(e.target.value)}
+                      className="flex-1 px-2 py-1 bg-white"
+                      style={{ border, borderRadius }}
+                      placeholder="Google Calendar 공개 ICS 주소"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2 p-2" style={{ border, borderRadius }}>
+                    <button
+                      onClick={importIcsFromUrl}
+                      disabled={isImportingIcs}
+                      className="px-2 py-1 bg-gray-100 hover:bg-gray-200 flex items-center gap-2 disabled:opacity-60"
+                      style={{ border, borderRadius }}
+                      title="주소에서 불러오기"
+                    >
+                      <Globe size={14} /> {isImportingIcs ? "불러오는 중…" : "URL에서 불러오기"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="flex items-center gap-2 p-2 col-span-2" style={{ border, borderRadius }}>
+                    <span>ICS 파일 업로드</span>
+                    <button
+                      onClick={() => refIcsFile.current?.click()}
+                      className="ml-auto px-2 py-1 bg-gray-100 hover:bg-gray-200"
+                      style={{ border, borderRadius }}
+                    >
+                      <FileUp size={12} /> 업로드
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -1023,9 +1201,18 @@ const CalendarPlanner: React.FC = () => {
         onChange={(e) => e.target.files?.[0] && importJSON(e.target.files[0])}
         className="hidden"
       />
+      <input
+        ref={refIcsFile}
+        type="file"
+        accept=".ics,text/calendar"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) importIcsFromFile(f);
+        }}
+        className="hidden"
+      />
     </div>
   );
 };
 
 export default CalendarPlanner;
-
