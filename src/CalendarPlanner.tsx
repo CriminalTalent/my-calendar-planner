@@ -47,7 +47,7 @@ const hexToRgba = (hex: string, a = 1) => {
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 };
 
-const STORAGE_KEY = "MCP_v13";
+const STORAGE_KEY = "MCP_v14";
 
 /* ───────── component ───────── */
 const CalendarPlanner: React.FC = () => {
@@ -76,7 +76,7 @@ const CalendarPlanner: React.FC = () => {
   const [borderEnabled, setBorderEnabled] = useState(true);
   const [fontScale, setFontScale] = useState(1.0);
 
-  /* ✅ 페이지 배경 그라데이션 */
+  /* 페이지 배경 그라데이션 */
   const [gradientStart, setGradientStart] = useState("#667eea");
   const [gradientEnd, setGradientEnd] = useState("#764ba2");
 
@@ -90,10 +90,20 @@ const CalendarPlanner: React.FC = () => {
   const [calendarBgColor, setCalendarBgColor] = useState("#ffffff");
   const [calendarBgImg, setCalendarBgImg] = useState("");
 
+  /* 달력 디자인/사이즈 조절 (추가) */
+  const [calCellMinH, setCalCellMinH] = useState(84); // 셀 최소 높이
+  const [calHeaderH, setCalHeaderH] = useState(36);   // 요일 헤더 높이
+  const [calGap, setCalGap] = useState(8);            // 셀 간격(px)
+  const [calLineColor, setCalLineColor] = useState("#e5e7eb"); // 라인색
+
+  /* 새로 추가: 일정/투두 개별 색 선택 */
+  const [newEventColor, setNewEventColor] = useState(accentColor);
+  const [newTodoColor, setNewTodoColor] = useState(accentColor);
+
   /* holidays (simple manual) */
   const [holidayText, setHolidayText] = useState(""); // YYYY-MM-DD, 공백/줄바꿈/쉼표 구분
 
-  /* ✅ 구글 캘린더(ICS) 연동 상태 */
+  /* Google Calendar(ICS) 연동 */
   const [gcalIcsUrl, setGcalIcsUrl] = useState(
     "https://calendar.google.com/calendar/ical/ko.south_korea%23holiday%40group.v.calendar.google.com/public/basic.ics"
   );
@@ -107,7 +117,7 @@ const CalendarPlanner: React.FC = () => {
   const refGlobalBg = useRef<HTMLInputElement>(null);
   const refHeaderImg = useRef<HTMLInputElement>(null);
   const refDecorImg = useRef<HTMLInputElement>(null);
-  const refTimeImg = useRef<HTMLInputElement>(null); // ← ✅ 오타 수정 (thead: 제거)
+  const refTimeImg = useRef<HTMLInputElement>(null);
   const refTodoImg = useRef<HTMLInputElement>(null);
   const refCalImg = useRef<HTMLInputElement>(null);
   const refImportJson = useRef<HTMLInputElement>(null);
@@ -155,6 +165,14 @@ const CalendarPlanner: React.FC = () => {
       setHolidayText(d.holidayText ?? "");
 
       setGcalIcsUrl(d.gcalIcsUrl ?? gcalIcsUrl);
+
+      setCalCellMinH(d.calCellMinH ?? 84);
+      setCalHeaderH(d.calHeaderH ?? 36);
+      setCalGap(d.calGap ?? 8);
+      setCalLineColor(d.calLineColor ?? "#e5e7eb");
+
+      setNewEventColor(d.newEventColor ?? (d.accentColor ?? "#3b82f6"));
+      setNewTodoColor(d.newTodoColor ?? (d.accentColor ?? "#3b82f6"));
     } catch {
       /* ignore */
     }
@@ -189,6 +207,12 @@ const CalendarPlanner: React.FC = () => {
       calendarBgImg,
       holidayText,
       gcalIcsUrl,
+      calCellMinH,
+      calHeaderH,
+      calGap,
+      calLineColor,
+      newEventColor,
+      newTodoColor,
     };
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
@@ -221,6 +245,12 @@ const CalendarPlanner: React.FC = () => {
     calendarBgImg,
     holidayText,
     gcalIcsUrl,
+    calCellMinH,
+    calHeaderH,
+    calGap,
+    calLineColor,
+    newEventColor,
+    newTodoColor,
   ]);
 
   /* helpers */
@@ -261,7 +291,7 @@ const CalendarPlanner: React.FC = () => {
     window.location.reload();
   };
 
-  /* ───────── ICS -> events (Google Calendar 등) ───────── */
+  /* ICS -> events */
   type IcsEvent = { dtstart?: string; summary?: string };
   const parseICS = (txt: string): IcsEvent[] => {
     const out: IcsEvent[] = [];
@@ -342,7 +372,7 @@ const CalendarPlanner: React.FC = () => {
       const txt = await res.text();
       const n = importEventsFromICSString(txt);
       alert(`${n}개의 이벤트를 불러왔습니다.`);
-    } catch (e) {
+    } catch {
       alert("불러오기 실패(CORS 또는 URL 확인). .ics 파일 업로드를 사용해보세요.");
     } finally {
       setIsImportingIcs(false);
@@ -359,7 +389,7 @@ const CalendarPlanner: React.FC = () => {
     r.readAsText(file, "utf-8");
   };
 
-  /* calendar */
+  /* calendar array */
   const calendarDays = useMemo(() => {
     const first = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
     const start = addDays(first, -first.getDay()); // Sun start
@@ -376,14 +406,14 @@ const CalendarPlanner: React.FC = () => {
     return set;
   }, [holidayText]);
 
-  /* CRUD */
+  /* CRUD with color */
   const addEventLocal = () => {
     const text = newEvent.trim();
     if (!text) return;
     const k = dateKey(selectedDate);
     setEvents((p) => ({
       ...p,
-      [k]: [...(p[k] || []), { id: Date.now(), text, color: accentColor }],
+      [k]: [...(p[k] || []), { id: Date.now(), text, color: newEventColor }],
     }));
     setNewEvent("");
   };
@@ -397,13 +427,19 @@ const CalendarPlanner: React.FC = () => {
     }));
     setEditingEvent(null);
   };
+  const setEventColor = (k: string, id: number, color: string) => {
+    setEvents((p) => ({
+      ...p,
+      [k]: (p[k] || []).map((e) => (e.id === id ? { ...e, color } : e)),
+    }));
+  };
 
   const addTodoLocal = () => {
     const text = newTodo.trim();
     if (!text) return;
     setTodos((p) => [
       ...p,
-      { id: Date.now(), text, completed: false, color: accentColor },
+      { id: Date.now(), text, completed: false, color: newTodoColor },
     ]);
     setNewTodo("");
   };
@@ -412,10 +448,12 @@ const CalendarPlanner: React.FC = () => {
       p.map((t) => (t.id === id ? { ...t, completed: !t.completed } : t))
     );
   const deleteTodo = (id: number) => setTodos((p) => p.filter((t) => t.id !== id));
+  const setTodoColorLocal = (id: number, color: string) =>
+    setTodos((p) => p.map((t) => (t.id === id ? { ...t, color } : t)));
 
   /* styles */
   const border = borderEnabled
-    ? `1px solid ${hexToRgba("#000", 0.12)}`
+    ? `1px solid ${calLineColor || hexToRgba("#000", 0.12)}`
     : "1px solid transparent";
   const cardBg = (hex: string) => hexToRgba(hex, containerOpacity);
 
@@ -497,7 +535,7 @@ const CalendarPlanner: React.FC = () => {
           <div className="col-span-12 lg:col-span-4 space-y-4">
             {/* 꾸미기 컨테이너 */}
             <div className="p-4 shadow" style={decorStyle}>
-              <p className="text-sm opacity-70"></p>
+              <p className="text-sm opacity-70">꾸미기 공간</p>
             </div>
 
             {/* 현재시각 컨테이너 */}
@@ -529,10 +567,19 @@ const CalendarPlanner: React.FC = () => {
                   className="flex-1 px-3 py-2 bg-white/95"
                   style={{ border, borderRadius }}
                 />
+                <input
+                  type="color"
+                  value={newTodoColor}
+                  onChange={(e) => setNewTodoColor(e.target.value)}
+                  title="투두 색상"
+                  className="w-10 h-10 p-0 cursor-pointer"
+                  style={{ border, borderRadius, background: "#fff" }}
+                />
                 <button
                   onClick={addTodoLocal}
                   className="px-3 py-2 text-white"
-                  style={{ backgroundColor: accentColor, border, borderRadius }}
+                  style={{ backgroundColor: newTodoColor, border, borderRadius }}
+                  aria-label="추가"
                 >
                   <Plus size={16} />
                 </button>
@@ -564,6 +611,14 @@ const CalendarPlanner: React.FC = () => {
                     >
                       {t.text}
                     </span>
+                    <input
+                      type="color"
+                      value={t.color}
+                      onChange={(e) => setTodoColorLocal(t.id, e.target.value)}
+                      title="색상 변경"
+                      className="w-8 h-8 p-0 cursor-pointer"
+                      style={{ border, borderRadius, background: "#fff" }}
+                    />
                     <button
                       onClick={() => deleteTodo(t.id)}
                       className="p-1.5 text-red-600 hover:bg-red-50"
@@ -610,12 +665,20 @@ const CalendarPlanner: React.FC = () => {
             </div>
 
             {/* weekdays */}
-            <div className="grid grid-cols-7 gap-2 mb-2">
+            <div
+              className="grid grid-cols-7 mb-2"
+              style={{ gap: calGap }}
+            >
               {["일", "월", "화", "수", "목", "금", "토"].map((w) => (
                 <div
                   key={w}
-                  className="text-center py-1.5 font-medium bg-gray-50"
-                  style={{ border, borderRadius }}
+                  className="text-center font-medium bg-gray-50 flex items-center justify-center"
+                  style={{
+                    border,
+                    borderRadius,
+                    height: calHeaderH,
+                    lineHeight: `${calHeaderH}px`,
+                  }}
                 >
                   {w}
                 </div>
@@ -623,7 +686,7 @@ const CalendarPlanner: React.FC = () => {
             </div>
 
             {/* cells */}
-            <div className="grid grid-cols-7 gap-2">
+            <div className="grid grid-cols-7" style={{ gap: calGap }}>
               {calendarDays.map((day) => {
                 const k = dateKey(day);
                 const dayEvents = events[k] || [];
@@ -649,7 +712,7 @@ const CalendarPlanner: React.FC = () => {
                     onClick={() => setSelectedDate(new Date(day))}
                     className="text-left transition-all relative"
                     style={{
-                      minHeight: 84,
+                      minHeight: calCellMinH,
                       padding: 8,
                       border,
                       borderRadius,
@@ -665,7 +728,7 @@ const CalendarPlanner: React.FC = () => {
                     <div className="font-medium mb-1" style={{ color: numberColor }}>
                       {day.getDate()}
                     </div>
-                    <div className="space-y-0.5">
+                    <div className="space-y-1">
                       {dayEvents.slice(0, 3).map((ev) => (
                         <div
                           key={ev.id}
@@ -704,10 +767,18 @@ const CalendarPlanner: React.FC = () => {
                   className="flex-1 px-3 py-2 bg-white"
                   style={{ border, borderRadius }}
                 />
+                <input
+                  type="color"
+                  value={newEventColor}
+                  onChange={(e) => setNewEventColor(e.target.value)}
+                  title="일정 색상"
+                  className="w-10 h-10 p-0 cursor-pointer"
+                  style={{ border, borderRadius, background: "#fff" }}
+                />
                 <button
                   onClick={addEventLocal}
                   className="px-3 py-2 text-white"
-                  style={{ backgroundColor: accentColor, border, borderRadius }}
+                  style={{ backgroundColor: newEventColor, border, borderRadius }}
                 >
                   <Plus size={16} />
                 </button>
@@ -750,6 +821,16 @@ const CalendarPlanner: React.FC = () => {
                         {ev.text}
                       </div>
                     )}
+                    <input
+                      type="color"
+                      defaultValue={ev.color}
+                      onChange={(e) =>
+                        setEventColor(selectedKey, ev.id, e.target.value)
+                      }
+                      title="색상 변경"
+                      className="w-8 h-8 p-0 cursor-pointer"
+                      style={{ border, borderRadius, background: "#fff" }}
+                    />
                     <button
                       onClick={() =>
                         setEditingEvent(editingEvent === ev.id ? null : ev.id)
@@ -1166,6 +1247,58 @@ const CalendarPlanner: React.FC = () => {
                       </button>
                     )}
                   </div>
+                </div>
+              </div>
+
+              {/* 달력 디자인/사이즈 조절 */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                <div className="p-2" style={{ border, borderRadius }}>
+                  <label className="block text-xs mb-1">셀 최소 높이</label>
+                  <input
+                    type="range"
+                    min={60}
+                    max={150}
+                    step={2}
+                    value={calCellMinH}
+                    onChange={(e) => setCalCellMinH(Number(e.target.value))}
+                    className="w-full"
+                  />
+                  <div className="text-right text-xs mt-1">{calCellMinH}px</div>
+                </div>
+                <div className="p-2" style={{ border, borderRadius }}>
+                  <label className="block text-xs mb-1">요일 헤더 높이</label>
+                  <input
+                    type="range"
+                    min={28}
+                    max={64}
+                    step={1}
+                    value={calHeaderH}
+                    onChange={(e) => setCalHeaderH(Number(e.target.value))}
+                    className="w-full"
+                  />
+                  <div className="text-right text-xs mt-1">{calHeaderH}px</div>
+                </div>
+                <div className="p-2" style={{ border, borderRadius }}>
+                  <label className="block text-xs mb-1">격자 간격</label>
+                  <input
+                    type="range"
+                    min={0}
+                    max={16}
+                    step={1}
+                    value={calGap}
+                    onChange={(e) => setCalGap(Number(e.target.value))}
+                    className="w-full"
+                  />
+                  <div className="text-right text-xs mt-1">{calGap}px</div>
+                </div>
+                <div className="p-2" style={{ border, borderRadius }}>
+                  <label className="block text-xs mb-1">라인 색상</label>
+                  <input
+                    type="color"
+                    value={calLineColor}
+                    onChange={(e) => setCalLineColor(e.target.value)}
+                    className="w-8 h-8 cursor-pointer"
+                  />
                 </div>
               </div>
 
