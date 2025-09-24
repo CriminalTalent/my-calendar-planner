@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* --- Base reset & smoothing --- */
+@layer base {
+  html, body, #root { @apply h-full; }
+  body { 
+    @apply antialiased text-gray-800 bg-slate-50;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  .dark body { @apply text-gray-100 bg-slate-900; }
+}
+
+/* --- Better focus ring --- */
+@layer utilities {
+  .focus-visible-ring {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-500;
+  }
+}
+
+/* --- Scrollbar --- */
+:root {
+  --scrollbar-thumb: 221 221 225;
+  --scrollbar-track: 245 246 248;
+}
+.dark:root {
+  --scrollbar-thumb: 80 84 92;
+  --scrollbar-track: 30 32 36;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--scrollbar-thumb)) rgb(var(--scrollbar-track));
+}
+*::-webkit-scrollbar { height: 10px; width: 10px; }
+*::-webkit-scrollbar-track { background: rgb(var(--scrollbar-track)); }
+*::-webkit-scrollbar-thumb {
+  background: rgb(var(--scrollbar-thumb));
+  border-radius: 0;
+  border: 2px solid rgb(var(--scrollbar-track));
+}
+
+/* --- Selection --- */
+::selection { background: rgba(59,130,246,.25); }
+.dark ::selection { background: rgba(147,197,253,.35); }
+
+/* --- Card helper --- */
+.card { @apply bg-white border shadow-[0_1px_2px_rgba(0,0,0,0.04),0_1px_8px_rgba(0,0,0,0.03)]; }
+.dark .card { @apply bg-slate-800 border-slate-700; }
