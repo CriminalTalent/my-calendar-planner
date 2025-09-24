@@ -535,7 +535,7 @@ const CalendarPlanner: React.FC = () => {
           <div className="col-span-12 lg:col-span-4 space-y-4">
             {/* 꾸미기 컨테이너 */}
             <div className="p-4 shadow" style={decorStyle}>
-              <p className="text-sm opacity-70">꾸미기 공간</p>
+              <p className="text-sm opacity-70"></p>
             </div>
 
             {/* 현재시각 컨테이너 */}
@@ -1440,3 +1440,4 @@ const CalendarPlanner: React.FC = () => {
 };
 
 export default CalendarPlanner;
+
