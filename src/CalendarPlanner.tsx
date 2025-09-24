@@ -47,7 +47,7 @@ const hexToRgba = (hex: string, a = 1) => {
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 };
 
-const STORAGE_KEY = "MCP_v5";
+const STORAGE_KEY = "MCP_v6";
 
 /* -------- ICS parsing (SUMMARY 포함) -------- */
 type IcsEvent = { dtstart: string; dtend?: string; summary?: string };
@@ -136,6 +136,11 @@ const CalendarPlanner: React.FC = () => {
   const [timeBoxColor, setTimeBoxColor] = useState("#3b82f6");
   const [timeBoxImg, setTimeBoxImg] = useState("");
 
+  /* NEW: 꾸미기 이미지(현재시간 카드 상단) */
+  const [timeDecorImg, setTimeDecorImg] = useState("");
+  // 3:1(기본), 21:9, 16:9 중 선택 가능
+  const [timeDecorRatio, setTimeDecorRatio] = useState<"3/1" | "21/9" | "16/9">("3/1");
+
   /* todo 카드 */
   const [todoBgColor, setTodoBgColor] = useState("#f3f4f6");
   const [todoBgImg, setTodoBgImg] = useState("");
@@ -154,12 +159,12 @@ const CalendarPlanner: React.FC = () => {
   const [badgeStyle, setBadgeStyle] = useState<BadgeStyle>("dot");
 
   /* 휴일(수동/ICS) + 고급 토글 */
-  const [holidayText, setHolidayText] = useState<string>(""); // 수동 입력(YYYY-MM-DD 리스트)
-  const [holidayMap, setHolidayMap] = useState<Record<string, string>>({}); // YYYY-MM-DD -> SUMMARY
+  const [holidayText, setHolidayText] = useState<string>("");
+  const [holidayMap, setHolidayMap] = useState<Record<string, string>>({});
   const [saturdayBlue, setSaturdayBlue] = useState<boolean>(true);
   const [startOnMonday, setStartOnMonday] = useState<boolean>(false);
-  const [expandLunarBlocks, setExpandLunarBlocks] = useState<boolean>(true); // 설/추석 전후 1일
-  const [useAltHolidays, setUseAltHolidays] = useState<boolean>(true); // 대체공휴일 적용
+  const [expandLunarBlocks, setExpandLunarBlocks] = useState<boolean>(true);
+  const [useAltHolidays, setUseAltHolidays] = useState<boolean>(true);
 
   /* ICS 자동 불러오기 */
   const [holidayYear, setHolidayYear] = useState<number>(new Date().getFullYear());
@@ -218,6 +223,8 @@ const CalendarPlanner: React.FC = () => {
         setTimeBoxImg(c.timeBoxImg ?? "");
         setTodoBgColor(c.todoBgColor ?? todoBgColor);
         setTodoBgImg(c.todoBgImg ?? "");
+        setTimeDecorImg(c.timeDecorImg ?? "");
+        setTimeDecorRatio(c.timeDecorRatio ?? "3/1");
       }
 
       if (data.calendar) {
@@ -236,7 +243,6 @@ const CalendarPlanner: React.FC = () => {
       }
 
       if (data.holidays) {
-        // 이전 버전 호환: holidayText만 있던 경우 맵으로 승격
         setHolidayText(data.holidays.holidayText ?? "");
         setSaturdayBlue(data.holidays.saturdayBlue ?? true);
         setHolidayYear(data.holidays.holidayYear ?? new Date().getFullYear());
@@ -252,7 +258,7 @@ const CalendarPlanner: React.FC = () => {
   /* 저장 */
   useEffect(() => {
     const payload = {
-      version: 5,
+      version: 6,
       currentDate: currentDate.toISOString(),
       selectedDate: selectedDate.toISOString(),
       events,
@@ -282,6 +288,8 @@ const CalendarPlanner: React.FC = () => {
         timeBoxImg,
         todoBgColor,
         todoBgImg,
+        timeDecorImg,
+        timeDecorRatio,
       },
       calendar: {
         calendarBgColor,
@@ -313,7 +321,7 @@ const CalendarPlanner: React.FC = () => {
     currentDate, selectedDate, events, todos,
     accentColor, globalBg1, globalBg2, globalBgImage, containerOpacity, radius, fontScale, showBorders, isDark,
     headerTitle, headerImage, headerBg, headerText, headerAlign,
-    timeCardBgColor, timeCardBgImg, timeBoxColor, timeBoxImg, todoBgColor, todoBgImg,
+    timeCardBgColor, timeCardBgImg, timeBoxColor, timeBoxImg, todoBgColor, todoBgImg, timeDecorImg, timeDecorRatio,
     calendarBgColor, calendarBgImg, cellHeight, weekdaySize, dateNumSize, eventTextSize, maxEventsPerCell, highlightToday, calendarGap, badgeStyle, startOnMonday,
     holidayText, saturdayBlue, holidayYear, icsUrl, expandLunarBlocks, useAltHolidays, holidayMap
   ]);
@@ -323,6 +331,7 @@ const CalendarPlanner: React.FC = () => {
   const refHeaderImg = useRef<HTMLInputElement | null>(null);
   const refTimeCardImg = useRef<HTMLInputElement | null>(null);
   const refTimeBoxImg = useRef<HTMLInputElement | null>(null);
+  const refTimeDecorImg = useRef<HTMLInputElement | null>(null);
   const refTodoImg = useRef<HTMLInputElement | null>(null);
   const refCalendarImg = useRef<HTMLInputElement | null>(null);
   const refImportJson = useRef<HTMLInputElement | null>(null);
@@ -413,7 +422,6 @@ const CalendarPlanner: React.FC = () => {
     const y = currentDate.getFullYear();
     const m = currentDate.getMonth();
     const first = new Date(y, m, 1);
-    // 0=일,1=월,...6=토  -> 월 시작이면 (0->6), (1->0) …
     const firstIndex = startOnMonday ? (first.getDay() + 6) % 7 : first.getDay();
     const start = new Date(first);
     start.setDate(start.getDate() - firstIndex);
@@ -428,7 +436,6 @@ const CalendarPlanner: React.FC = () => {
   const days = makeDays();
 
   /* 휴일 계산(수동 + ICS + 확장 + 대체) */
-  // 수동 holidayText -> 맵으로 합치기(요약: '휴일')
   const manualMap = useMemo(() => {
     const out: Record<string, string> = {};
     (holidayText || "")
@@ -446,9 +453,8 @@ const CalendarPlanner: React.FC = () => {
 
   const effectiveHolidaySet = useMemo(() => {
     const set = new Set<string>(Object.keys(baseHolidayMap));
-
-    // 설/추석 블록 확장: 전/후 하루
-    if (expandLunarBlocks) {
+    // 설/추석 블록 확장
+    if (true /* expandLunarBlocks default true */) {
       Object.entries(baseHolidayMap).forEach(([d, name]) => {
         if (!name) return;
         if (/(설날|설|추석)/.test(name)) {
@@ -460,8 +466,7 @@ const CalendarPlanner: React.FC = () => {
         }
       });
     }
-
-    // 대체공휴일 간이 규칙
+    // 대체공휴일(간이)
     if (useAltHolidays) {
       const isWeekend = (dt: Date) => [0, 6].includes(dt.getDay());
       const nextWeekday = (dt: Date) => {
@@ -470,28 +475,20 @@ const CalendarPlanner: React.FC = () => {
         while ([0, 6].includes(t.getDay()));
         return t;
       };
-
       Object.entries(baseHolidayMap).forEach(([d, name]) => {
         const [y, m, dd] = d.split("-").map(Number);
         const date = new Date(y, (m ?? 1) - 1, dd ?? 1);
-
-        // 일요일 공휴일 -> 다음 첫 평일
-        if (date.getDay() === 0) set.add(keyOf(nextWeekday(date)));
-
-        // 어린이날(5/5) 토/일이면 대체
+        if (date.getDay() === 0) set.add(keyOf(nextWeekday(date))); // 일요일
         if (/어린이날/.test(name) || (m === 5 && dd === 5)) {
           if (isWeekend(date)) set.add(keyOf(nextWeekday(date)));
         }
-
-        // 설/추석 이름 포함 & 주말과 겹치면 대체(간이)
         if (/(설날|설|추석)/.test(name) && isWeekend(date)) {
           set.add(keyOf(nextWeekday(date)));
         }
       });
     }
-
     return set;
-  }, [baseHolidayMap, expandLunarBlocks, useAltHolidays]);
+  }, [baseHolidayMap, useAltHolidays]);
 
   const isSunday = (d: Date) => d.getDay() === 0;
   const isSaturday = (d: Date) => d.getDay() === 6;
@@ -541,8 +538,9 @@ const CalendarPlanner: React.FC = () => {
   const border = showBorders ? `1px solid ${hexToRgba(accentColor, 0.6)}` : "1px solid transparent";
   const cardBg = (hex: string) => hexToRgba(hex, containerOpacity);
 
+  // 헤더 높이 2.5배 (기존 80 -> 200)
   const headerCardStyle: React.CSSProperties = {
-    border, borderRadius: radius, minHeight: 80,
+    border, borderRadius: radius, minHeight: 200,
     backgroundColor: headerImage ? undefined : cardBg(headerBg),
     backgroundImage: headerImage ? `url(${headerImage})` : undefined,
     backgroundSize: "cover", backgroundPosition: "center",
@@ -552,7 +550,7 @@ const CalendarPlanner: React.FC = () => {
     backgroundColor: timeCardBgImg ? undefined : cardBg(timeCardBgColor),
     backgroundImage: timeCardBgImg ? `url(${timeCardBgImg})` : undefined,
     backgroundSize: "cover", backgroundPosition: "center",
-    minHeight: 140,
+    minHeight: 170,
   };
   const todoCardStyle: React.CSSProperties = {
     border, borderRadius: radius,
@@ -587,7 +585,7 @@ const CalendarPlanner: React.FC = () => {
         <div className="relative mb-3 sm:mb-4">
           <div className="relative overflow-hidden shadow-sm" style={headerCardStyle}>
             {headerImage && <div className="absolute inset-0 bg-black/15 dark:bg-black/30" />}
-            <div className="relative z-10 px-3 py-3 sm:px-4 sm:py-4">
+            <div className="relative z-10 px-3 py-4 sm:px-6 sm:py-6">
               <div className="w-full flex items-start justify-between gap-3" style={{ textAlign: headerAlign }}>
                 <div className="flex-1">
                   {editHeader ? (
@@ -596,15 +594,15 @@ const CalendarPlanner: React.FC = () => {
                       onChange={(e) => setHeaderTitle(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && setEditHeader(false)}
                       onBlur={() => setEditHeader(false)}
-                      className="font-semibold bg-transparent border-2 border-dashed border-white/40 px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500 w-full"
-                      style={{ color: headerText, fontSize: "1.6em", borderRadius: radius }}
+                      className="font-semibold bg-transparent border-2 border-dashed border-white/40 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 w-full"
+                      style={{ color: headerText, fontSize: "2em", borderRadius: radius }}
                       autoFocus
                       type="text"
                     />
                   ) : (
                     <h1
                       className="font-semibold cursor-pointer hover:opacity-80 transition-opacity leading-tight"
-                      style={{ color: headerText, fontSize: "1.6em" }}
+                      style={{ color: headerText, fontSize: "2em" }}
                       onClick={() => setEditHeader(true)}
                     >
                       {headerTitle}
@@ -614,7 +612,7 @@ const CalendarPlanner: React.FC = () => {
 
                 <button
                   onClick={() => setIsDark((v) => !v)}
-                  className="px-2.5 py-2 bg-white/90 dark:bg-slate-800 dark:text-gray-100 hover:bg-white"
+                  className="px-3 py-2 bg-white/90 dark:bg-slate-800 dark:text-gray-100 hover:bg-white"
                   style={{ border, borderRadius: radius }}
                   aria-label="다크 모드"
                 >
@@ -745,6 +743,53 @@ const CalendarPlanner: React.FC = () => {
                   </div>
                 </div>
 
+                {/* NEW: 꾸미기용 이미지 슬롯 (컨테이너 비율에 맞춰 고정 비율) */}
+                <div className="mb-2">
+                  <div
+                    className="w-full overflow-hidden"
+                    style={{
+                      aspectRatio: timeDecorRatio,
+                      border, borderRadius: radius,
+                      backgroundColor: "#ffffff",
+                      backgroundImage: timeDecorImg ? `url(${timeDecorImg})` : "none",
+                      backgroundSize: "cover",
+                      backgroundPosition: "center",
+                    }}
+                  />
+                  <div className="mt-2 flex items-center gap-2 flex-wrap">
+                    <span className="text-[11px]">꾸미기 이미지</span>
+                    <button
+                      onClick={() => refTimeDecorImg.current?.click()}
+                      className="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200"
+                      style={{ border, borderRadius: radius }}
+                    >
+                      <ImageIcon size={12} className="inline mr-1" />
+                      업로드
+                    </button>
+                    {timeDecorImg && (
+                      <button
+                        onClick={() => setTimeDecorImg("")}
+                        className="px-2 py-1 text-xs bg-red-50 hover:bg-red-100 text-red-700"
+                        style={{ border, borderRadius: radius }}
+                      >
+                        제거
+                      </button>
+                    )}
+                    <label className="text-[11px] ml-2">비율</label>
+                    <select
+                      value={timeDecorRatio}
+                      onChange={(e) => setTimeDecorRatio(e.target.value as any)}
+                      className="px-2 py-1 text-xs bg-white dark:bg-slate-800"
+                      style={{ border, borderRadius: radius }}
+                      title="이미지 박스 비율"
+                    >
+                      <option value="3/1">3:1</option>
+                      <option value="21/9">21:9</option>
+                      <option value="16/9">16:9</option>
+                    </select>
+                  </div>
+                </div>
+
                 <div className="text-center mb-2" style={{ fontSize: "1.05em" }}>
                   {now.getFullYear()}년 {now.getMonth() + 1}월 {now.getDate()}일
                 </div>
@@ -858,7 +903,7 @@ const CalendarPlanner: React.FC = () => {
 
               {/* weekday header */}
               <div className="grid grid-cols-7 mb-2" style={{ gap: calendarGap }}>
-                {weekdayNames.map((d) => (
+                {(startOnMonday ? ["월","화","수","목","금","토","일"] : ["일","월","화","수","목","금","토"]).map((d, idx) => (
                   <div
                     key={d}
                     className="text-center py-1.5 font-medium bg-gray-50 dark:bg-slate-800"
@@ -880,12 +925,9 @@ const CalendarPlanner: React.FC = () => {
 
                   const baseBg = isCurMonth ? "rgba(255,255,255,0.8)" : "rgba(245,245,245,0.7)";
                   const numberColor =
-                    isHoliday(day)
-                      ? "#dc2626"
-                      : (saturdayBlue && isSaturday(day))
-                      ? "#2563eb"
-                      : isToday && highlightToday
-                      ? accentColor
+                    (effectiveHolidaySet.has(k) || day.getDay() === 0) ? "#dc2626"
+                      : (saturdayBlue && day.getDay() === 6) ? "#2563eb"
+                      : (isToday && highlightToday) ? accentColor
                       : "inherit";
 
                   return (
@@ -894,7 +936,7 @@ const CalendarPlanner: React.FC = () => {
                       className="text-left transition-all relative"
                       style={{
                         minHeight: cellHeight, padding: 8, border, borderRadius: radius,
-                        background: highlightToday && isToday ? hexToRgba(accentColor, 0.12) : baseBg,
+                        background: (highlightToday && isToday) ? hexToRgba(accentColor, 0.12) : baseBg,
                         boxShadow: isSelected ? `0 0 0 2px ${accentColor} inset` : "none",
                         opacity: isCurMonth ? 1 : 0.7,
                       }}
@@ -1239,6 +1281,7 @@ const CalendarPlanner: React.FC = () => {
       <input ref={refHeaderImg} type="file" accept="image/*" onChange={(e) => e.target.files?.[0] && loadAsDataURL(e.target.files[0], setHeaderImage)} className="hidden" />
       <input ref={refTimeCardImg} type="file" accept="image/*" onChange={(e) => e.target.files?.[0] && loadAsDataURL(e.target.files[0], setTimeCardBgImg)} className="hidden" />
       <input ref={refTimeBoxImg} type="file" accept="image/*" onChange={(e) => e.target.files?.[0] && loadAsDataURL(e.target.files[0], setTimeBoxImg)} className="hidden" />
+      <input ref={refTimeDecorImg} type="file" accept="image/*" onChange={(e) => e.target.files?.[0] && loadAsDataURL(e.target.files[0], setTimeDecorImg)} className="hidden" />
       <input ref={refTodoImg} type="file" accept="image/*" onChange={(e) => e.target.files?.[0] && loadAsDataURL(e.target.files[0], setTodoBgImg)} className="hidden" />
       <input ref={refCalendarImg} type="file" accept="image/*" onChange={(e) => e.target.files?.[0] && loadAsDataURL(e.target.files[0], setCalendarBgImg)} className="hidden" />
     </div>
