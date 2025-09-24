@@ -21,9 +21,12 @@ import {
   ChevronUp,
   Globe,
   Link as LinkIcon,
+  RefreshCw,
+  Share2,
 } from "lucide-react";
+import { supabase, fetchRoom, upsertRoom } from "./supabase";
 
-/* ───────── utils ───────── */
+/* ───────── types & utils ───────── */
 type TEvent = { id: number; text: string; color: string };
 type TTodo = { id: number; text: string; completed: boolean; color: string };
 
@@ -47,10 +50,58 @@ const hexToRgba = (hex: string, a = 1) => {
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 };
 
-const STORAGE_KEY = "MCP_v14";
+const STORAGE_KEY = "MCP_supabase_v1";
+
+type CloudDoc = {
+  events: Record<string, TEvent[]>;
+  todos: TTodo[];
+  headerTitle: string;
+  headerImage: string;
+  headerBgColor: string;
+  headerTextColor: string;
+  headerTextAlign: "left" | "center" | "right";
+  accentColor: string;
+  backgroundImage: string;
+  containerOpacity: number;
+  borderRadius: number;
+  borderEnabled: boolean;
+  fontScale: number;
+  gradientStart: string;
+  gradientEnd: string;
+  decorCardBgColor: string;
+  decorCardBgImg: string;
+  timeCardBgColor: string;
+  timeCardBgImg: string;
+  todoBgColor: string;
+  todoBgImg: string;
+  calendarBgColor: string;
+  calendarBgImg: string;
+  holidayText: string;
+  gcalIcsUrl: string;
+  calCellMinH: number;
+  calHeaderH: number;
+  calGap: number;
+  calLineColor: string;
+  newEventColor: string;
+  newTodoColor: string;
+  updatedAt: number;
+};
+
+const debounce = <F extends (...args: any[]) => void>(fn: F, wait = 600) => {
+  let t: number | undefined;
+  return (...args: Parameters<F>) => {
+    window.clearTimeout(t);
+    t = window.setTimeout(() => fn(...args), wait);
+  };
+};
+
+/* ───────── props ───────── */
+interface Props {
+  roomId: string;
+}
 
 /* ───────── component ───────── */
-const CalendarPlanner: React.FC = () => {
+const CalendarPlanner: React.FC<Props> = ({ roomId }) => {
   /* core data */
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState(new Date());
@@ -60,7 +111,7 @@ const CalendarPlanner: React.FC = () => {
   const [newTodo, setNewTodo] = useState("");
   const [editingEvent, setEditingEvent] = useState<number | null>(null);
 
-  /* header (settings panel only) */
+  /* header */
   const [headerTitle, setHeaderTitle] = useState("나의 플래너");
   const [headerImage, setHeaderImage] = useState("");
   const [headerBgColor, setHeaderBgColor] = useState("#ffffff");
@@ -68,7 +119,7 @@ const CalendarPlanner: React.FC = () => {
   const [headerTextAlign, setHeaderTextAlign] =
     useState<"left" | "center" | "right">("left");
 
-  /* global theme */
+  /* theme */
   const [accentColor, setAccentColor] = useState("#3b82f6");
   const [backgroundImage, setBackgroundImage] = useState("");
   const [containerOpacity, setContainerOpacity] = useState(0.92);
@@ -76,11 +127,11 @@ const CalendarPlanner: React.FC = () => {
   const [borderEnabled, setBorderEnabled] = useState(true);
   const [fontScale, setFontScale] = useState(1.0);
 
-  /* 페이지 배경 그라데이션 */
+  /* gradient */
   const [gradientStart, setGradientStart] = useState("#667eea");
   const [gradientEnd, setGradientEnd] = useState("#764ba2");
 
-  /* containers background */
+  /* containers */
   const [decorCardBgColor, setDecorCardBgColor] = useState("#f3f4f6");
   const [decorCardBgImg, setDecorCardBgImg] = useState("");
   const [timeCardBgColor, setTimeCardBgColor] = useState("#f3f4f6");
@@ -90,20 +141,20 @@ const CalendarPlanner: React.FC = () => {
   const [calendarBgColor, setCalendarBgColor] = useState("#ffffff");
   const [calendarBgImg, setCalendarBgImg] = useState("");
 
-  /* 달력 디자인/사이즈 조절 (추가) */
-  const [calCellMinH, setCalCellMinH] = useState(84); // 셀 최소 높이
-  const [calHeaderH, setCalHeaderH] = useState(36);   // 요일 헤더 높이
-  const [calGap, setCalGap] = useState(8);            // 셀 간격(px)
-  const [calLineColor, setCalLineColor] = useState("#e5e7eb"); // 라인색
+  /* calendar size/design */
+  const [calCellMinH, setCalCellMinH] = useState(84);
+  const [calHeaderH, setCalHeaderH] = useState(36);
+  const [calGap, setCalGap] = useState(8);
+  const [calLineColor, setCalLineColor] = useState("#e5e7eb");
 
-  /* 새로 추가: 일정/투두 개별 색 선택 */
+  /* colors for new items */
   const [newEventColor, setNewEventColor] = useState(accentColor);
   const [newTodoColor, setNewTodoColor] = useState(accentColor);
 
-  /* holidays (simple manual) */
-  const [holidayText, setHolidayText] = useState(""); // YYYY-MM-DD, 공백/줄바꿈/쉼표 구분
+  /* holidays */
+  const [holidayText, setHolidayText] = useState("");
 
-  /* Google Calendar(ICS) 연동 */
+  /* ICS */
   const [gcalIcsUrl, setGcalIcsUrl] = useState(
     "https://calendar.google.com/calendar/ical/ko.south_korea%23holiday%40group.v.calendar.google.com/public/basic.ics"
   );
@@ -112,6 +163,7 @@ const CalendarPlanner: React.FC = () => {
   /* UI */
   const [showSettings, setShowSettings] = useState(false);
   const [now, setNow] = useState(new Date());
+  const [syncing, setSyncing] = useState(false);
 
   /* refs for uploads */
   const refGlobalBg = useRef<HTMLInputElement>(null);
@@ -123,103 +175,53 @@ const CalendarPlanner: React.FC = () => {
   const refImportJson = useRef<HTMLInputElement>(null);
   const refIcsFile = useRef<HTMLInputElement>(null);
 
+  /* cloud control */
+  const lastRemoteUpdated = useRef<number>(0);
+  const skipNextLocalSave = useRef(false);
+
   /* clock */
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
 
-  /* load */
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      const d = JSON.parse(raw);
+  /* helpers */
+  const applyPayloadToStates = (d: Partial<CloudDoc> | null | undefined) => {
+    if (!d) return;
+    setEvents(d.events || {});
+    setTodos(d.todos || []);
+    setHeaderTitle(d.headerTitle ?? "나의 플래너");
+    setHeaderImage(d.headerImage ?? "");
+    setHeaderBgColor(d.headerBgColor ?? "#ffffff");
+    setHeaderTextColor(d.headerTextColor ?? "#1f2937");
+    setHeaderTextAlign((d.headerTextAlign as any) ?? "left");
+    setAccentColor(d.accentColor ?? "#3b82f6");
+    setBackgroundImage(d.backgroundImage ?? "");
+    setContainerOpacity(d.containerOpacity ?? 0.92);
+    setBorderRadius(d.borderRadius ?? 8);
+    setBorderEnabled(d.borderEnabled ?? true);
+    setFontScale(d.fontScale ?? 1.0);
+    setGradientStart(d.gradientStart ?? "#667eea");
+    setGradientEnd(d.gradientEnd ?? "#764ba2");
+    setDecorCardBgColor(d.decorCardBgColor ?? "#f3f4f6");
+    setDecorCardBgImg(d.decorCardBgImg ?? "");
+    setTimeCardBgColor(d.timeCardBgColor ?? "#f3f4f6");
+    setTimeCardBgImg(d.timeCardBgImg ?? "");
+    setTodoBgColor(d.todoBgColor ?? "#f3f4f6");
+    setTodoBgImg(d.todoBgImg ?? "");
+    setCalendarBgColor(d.calendarBgColor ?? "#ffffff");
+    setCalendarBgImg(d.calendarBgImg ?? "");
+    setHolidayText(d.holidayText ?? "");
+    setGcalIcsUrl(d.gcalIcsUrl ?? gcalIcsUrl);
+    setCalCellMinH(d.calCellMinH ?? 84);
+    setCalHeaderH(d.calHeaderH ?? 36);
+    setCalGap(d.calGap ?? 8);
+    setCalLineColor(d.calLineColor ?? "#e5e7eb");
+    setNewEventColor(d.newEventColor ?? (d.accentColor ?? "#3b82f6"));
+    setNewTodoColor(d.newTodoColor ?? (d.accentColor ?? "#3b82f6"));
+  };
 
-      setEvents(d.events || {});
-      setTodos(d.todos || []);
-      setHeaderTitle(d.headerTitle ?? "나의 플래너");
-      setHeaderImage(d.headerImage ?? "");
-      setHeaderBgColor(d.headerBgColor ?? "#ffffff");
-      setHeaderTextColor(d.headerTextColor ?? "#1f2937");
-      setHeaderTextAlign(d.headerTextAlign ?? "left");
-
-      setAccentColor(d.accentColor ?? "#3b82f6");
-      setBackgroundImage(d.backgroundImage ?? "");
-      setContainerOpacity(d.containerOpacity ?? 0.92);
-      setBorderRadius(d.borderRadius ?? 8);
-      setBorderEnabled(d.borderEnabled ?? true);
-      setFontScale(d.fontScale ?? 1.0);
-
-      setGradientStart(d.gradientStart ?? "#667eea");
-      setGradientEnd(d.gradientEnd ?? "#764ba2");
-
-      setDecorCardBgColor(d.decorCardBgColor ?? "#f3f4f6");
-      setDecorCardBgImg(d.decorCardBgImg ?? "");
-      setTimeCardBgColor(d.timeCardBgColor ?? "#f3f4f6");
-      setTimeCardBgImg(d.timeCardBgImg ?? "");
-      setTodoBgColor(d.todoBgColor ?? "#f3f4f6");
-      setTodoBgImg(d.todoBgImg ?? "");
-      setCalendarBgColor(d.calendarBgColor ?? "#ffffff");
-      setCalendarBgImg(d.calendarBgImg ?? "");
-      setHolidayText(d.holidayText ?? "");
-
-      setGcalIcsUrl(d.gcalIcsUrl ?? gcalIcsUrl);
-
-      setCalCellMinH(d.calCellMinH ?? 84);
-      setCalHeaderH(d.calHeaderH ?? 36);
-      setCalGap(d.calGap ?? 8);
-      setCalLineColor(d.calLineColor ?? "#e5e7eb");
-
-      setNewEventColor(d.newEventColor ?? (d.accentColor ?? "#3b82f6"));
-      setNewTodoColor(d.newTodoColor ?? (d.accentColor ?? "#3b82f6"));
-    } catch {
-      /* ignore */
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  /* auto-save */
-  useEffect(() => {
-    const payload = {
-      events,
-      todos,
-      headerTitle,
-      headerImage,
-      headerBgColor,
-      headerTextColor,
-      headerTextAlign,
-      accentColor,
-      backgroundImage,
-      containerOpacity,
-      borderRadius,
-      borderEnabled,
-      fontScale,
-      gradientStart,
-      gradientEnd,
-      decorCardBgColor,
-      decorCardBgImg,
-      timeCardBgColor,
-      timeCardBgImg,
-      todoBgColor,
-      todoBgImg,
-      calendarBgColor,
-      calendarBgImg,
-      holidayText,
-      gcalIcsUrl,
-      calCellMinH,
-      calHeaderH,
-      calGap,
-      calLineColor,
-      newEventColor,
-      newTodoColor,
-    };
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    } catch {
-      /* ignore */
-    }
-  }, [
+  const collectPayload = (): CloudDoc => ({
     events,
     todos,
     headerTitle,
@@ -251,9 +253,9 @@ const CalendarPlanner: React.FC = () => {
     calLineColor,
     newEventColor,
     newTodoColor,
-  ]);
+    updatedAt: Date.now(),
+  });
 
-  /* helpers */
   const loadDataUrl = (f: File, setter: (s: string) => void) => {
     const r = new FileReader();
     r.onload = (e) => setter(String(e.target?.result || ""));
@@ -266,18 +268,21 @@ const CalendarPlanner: React.FC = () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `planner-backup-${new Date()
-      .toISOString()
-      .replace(/[:.]/g, "-")}.json`;
+    a.download = `planner-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
+
   const importJSON = (file: File) => {
     const r = new FileReader();
-    r.onload = (e) => {
+    r.onload = async (e) => {
       try {
         const data = JSON.parse(String(e.target?.result || "{}"));
         localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        // 클라우드에도 즉시 반영
+        try {
+          await upsertRoom(roomId, data, Date.now());
+        } catch {}
         window.location.reload();
       } catch {
         alert("가져오기 실패: JSON 형식 확인");
@@ -285,13 +290,14 @@ const CalendarPlanner: React.FC = () => {
     };
     r.readAsText(file, "utf-8");
   };
+
   const resetAll = () => {
     if (!confirm("모든 설정/데이터가 초기화됩니다. 계속할까요?")) return;
     localStorage.removeItem(STORAGE_KEY);
     window.location.reload();
   };
 
-  /* ICS -> events */
+  /* ICS import */
   type IcsEvent = { dtstart?: string; summary?: string };
   const parseICS = (txt: string): IcsEvent[] => {
     const out: IcsEvent[] = [];
@@ -304,8 +310,7 @@ const CalendarPlanner: React.FC = () => {
         cur = null;
       } else if (cur) {
         if (line.startsWith("DTSTART")) cur.dtstart = line.split(":").pop() || "";
-        if (line.startsWith("SUMMARY"))
-          cur.summary = line.split(":").slice(1).join(":").trim();
+        if (line.startsWith("SUMMARY")) cur.summary = line.split(":").slice(1).join(":").trim();
       }
     }
     return out;
@@ -406,7 +411,7 @@ const CalendarPlanner: React.FC = () => {
     return set;
   }, [holidayText]);
 
-  /* CRUD with color */
+  /* CRUD */
   const addEventLocal = () => {
     const text = newEvent.trim();
     if (!text) return;
@@ -503,7 +508,131 @@ const CalendarPlanner: React.FC = () => {
   const selectedKey = dateKey(selectedDate);
   const selectedEvents = events[selectedKey] || [];
 
-  /* render */
+  /* ───────── Local Load ───────── */
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) applyPayloadToStates(JSON.parse(raw));
+    } catch {}
+  }, []);
+
+  /* ───────── Supabase Init (fetch & subscribe) ───────── */
+  useEffect(() => {
+    let mounted = true;
+
+    (async () => {
+      try {
+        // 1) 서버 상태 가져오기 (없으면 현재 로컬 상태 업서트)
+        const row = await fetchRoom(roomId);
+        if (row?.payload) {
+          lastRemoteUpdated.current = Number(row.updated_at || 0);
+          skipNextLocalSave.current = true;
+          applyPayloadToStates(row.payload);
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(row.payload));
+        } else {
+          const initial = collectPayload();
+          await upsertRoom(roomId, initial, initial.updatedAt);
+          lastRemoteUpdated.current = initial.updatedAt;
+        }
+      } catch (e) {
+        console.error("초기 로드 실패", e);
+      }
+
+      // 2) Realtime: rooms(id=roomId) 변경 구독
+      const channel = supabase
+        .channel(`rooms:${roomId}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "rooms",
+            filter: `id=eq.${roomId}`,
+          },
+          (payload) => {
+            if (!mounted) return;
+            const newRow: any = payload.new;
+            if (!newRow?.payload) return;
+            const ts = Number(newRow.updated_at || 0);
+            if (ts <= lastRemoteUpdated.current) return;
+            lastRemoteUpdated.current = ts;
+            skipNextLocalSave.current = true;
+            applyPayloadToStates(newRow.payload);
+            try {
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(newRow.payload));
+            } catch {}
+          }
+        )
+        .subscribe((status) => {
+          // console.log("realtime status:", status);
+        });
+
+      return () => {
+        mounted = false;
+        supabase.removeChannel(channel);
+      };
+    })();
+  }, [roomId]);
+
+  /* ───────── Save (local + cloud, debounced) ───────── */
+  const saveDebounced = debounce(async (payload: CloudDoc) => {
+    try {
+      setSyncing(true);
+      await upsertRoom(roomId, payload, payload.updatedAt);
+      lastRemoteUpdated.current = payload.updatedAt;
+    } catch (e) {
+      console.error("클라우드 저장 실패", e);
+    } finally {
+      setSyncing(false);
+    }
+  }, 600);
+
+  useEffect(() => {
+    const payload = collectPayload();
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    } catch {}
+    if (skipNextLocalSave.current) {
+      skipNextLocalSave.current = false;
+      return;
+    }
+    saveDebounced(payload);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    events,
+    todos,
+    headerTitle,
+    headerImage,
+    headerBgColor,
+    headerTextColor,
+    headerTextAlign,
+    accentColor,
+    backgroundImage,
+    containerOpacity,
+    borderRadius,
+    borderEnabled,
+    fontScale,
+    gradientStart,
+    gradientEnd,
+    decorCardBgColor,
+    decorCardBgImg,
+    timeCardBgColor,
+    timeCardBgImg,
+    todoBgColor,
+    todoBgImg,
+    calendarBgColor,
+    calendarBgImg,
+    holidayText,
+    gcalIcsUrl,
+    calCellMinH,
+    calHeaderH,
+    calGap,
+    calLineColor,
+    newEventColor,
+    newTodoColor,
+  ]);
+
+  /* ───────── UI ───────── */
   return (
     <div
       className="min-h-screen p-3 sm:p-4"
@@ -517,44 +646,83 @@ const CalendarPlanner: React.FC = () => {
       }}
     >
       <div className="max-w-7xl mx-auto space-y-4">
-        {/* header */}
-        <div className="shadow overflow-hidden" style={headerStyle}>
-          <div className="p-6 sm:p-8" style={{ textAlign: headerTextAlign }}>
-            <h1
-              className="font-bold"
-              style={{ color: headerTextColor, fontSize: "2.5rem" }}
-            >
-              {headerTitle}
-            </h1>
+        {/* 헤더 */}
+        <div className="shadow overflow-hidden" style={{
+          backgroundColor: headerImage ? undefined : headerBgColor,
+          backgroundImage: headerImage ? `url(${headerImage})` : undefined,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          minHeight: 200,
+          borderRadius,
+          border,
+        }}>
+          <div className="p-6 sm:p-8 flex items-center justify-between gap-3">
+            <div style={{ textAlign: headerTextAlign, width: "100%" }}>
+              <h1 className="font-bold" style={{ color: headerTextColor, fontSize: "2.5rem" }}>
+                {headerTitle}
+              </h1>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => navigator.clipboard.writeText(location.href)}
+                className="px-2 py-1 bg-white/90 hover:bg-white rounded flex items-center gap-1"
+                style={{ border }}
+                title="현재 방 링크 복사"
+              >
+                <Share2 size={14} /> 공유
+              </button>
+              <button
+                onClick={() => saveDebounced(collectPayload())}
+                className="px-2 py-1 bg-white/90 hover:bg-white rounded flex items-center gap-1"
+                style={{ border }}
+                title="즉시 동기화"
+              >
+                <RefreshCw size={14} />
+                {syncing ? "동기화…" : "동기화"}
+              </button>
+            </div>
           </div>
         </div>
 
-        {/* layout */}
+        {/* 레이아웃 */}
         <div className="grid grid-cols-12 gap-4">
-          {/* left column */}
+          {/* 왼쪽 */}
           <div className="col-span-12 lg:col-span-4 space-y-4">
-            {/* 꾸미기 컨테이너 */}
-            <div className="p-4 shadow" style={decorStyle}>
-              <p className="text-sm opacity-70"></p>
+            {/* 꾸미기 */}
+            <div className="p-4 shadow" style={{
+              backgroundColor: decorCardBgImg ? undefined : hexToRgba(decorCardBgColor, containerOpacity),
+              backgroundImage: decorCardBgImg ? `url(${decorCardBgImg})` : undefined,
+              backgroundSize: "cover",
+              backgroundPosition: "center",
+              borderRadius, border, minHeight: 140,
+            }}>
+              <p className="text-sm opacity-70">꾸미기 공간</p>
             </div>
 
-            {/* 현재시각 컨테이너 */}
-            <div className="p-5 shadow text-center" style={timeStyle}>
-              <div
-                className="font-mono font-bold text-3xl"
-                style={{ color: accentColor }}
-              >
-                {now.getFullYear()}-{pad2(now.getMonth() + 1)}-
-                {pad2(now.getDate())}
+            {/* 현재 시각 */}
+            <div className="p-5 shadow text-center" style={{
+              backgroundColor: timeCardBgImg ? undefined : hexToRgba(timeCardBgColor, containerOpacity),
+              backgroundImage: timeCardBgImg ? `url(${timeCardBgImg})` : undefined,
+              backgroundSize: "cover",
+              backgroundPosition: "center",
+              borderRadius, border,
+            }}>
+              <div className="font-mono font-bold text-3xl" style={{ color: accentColor }}>
+                {now.getFullYear()}-{pad2(now.getMonth() + 1)}-{pad2(now.getDate())}
               </div>
               <div className="font-mono text-2xl mt-2">
-                {pad2(now.getHours())}:{pad2(now.getMinutes())}:
-                {pad2(now.getSeconds())}
+                {pad2(now.getHours())}:{pad2(now.getMinutes())}:{pad2(now.getSeconds())}
               </div>
             </div>
 
-            {/* todo */}
-            <div className="p-4 shadow" style={todoStyle}>
+            {/* 투두 */}
+            <div className="p-4 shadow" style={{
+              backgroundColor: todoBgImg ? undefined : hexToRgba(todoBgColor, containerOpacity),
+              backgroundImage: todoBgImg ? `url(${todoBgImg})` : undefined,
+              backgroundSize: "cover",
+              backgroundPosition: "center",
+              borderRadius, border,
+            }}>
               <h3 className="font-semibold mb-3 flex items-center gap-2">
                 <CheckSquare size={18} /> 할 일
               </h3>
@@ -579,36 +747,26 @@ const CalendarPlanner: React.FC = () => {
                   onClick={addTodoLocal}
                   className="px-3 py-2 text-white"
                   style={{ backgroundColor: newTodoColor, border, borderRadius }}
-                  aria-label="추가"
                 >
                   <Plus size={16} />
                 </button>
               </div>
               <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
                 {todos.map((t) => (
-                  <div
-                    key={t.id}
-                    className="flex items-center gap-2 p-2 bg-white/95"
-                    style={{ border, borderRadius }}
-                  >
+                  <div key={t.id} className="flex items-center gap-2 p-2 bg-white/95"
+                       style={{ border, borderRadius }}>
                     <button
                       onClick={() => toggleTodo(t.id)}
                       className="w-6 h-6 flex items-center justify-center"
                       style={{
-                        border,
-                        borderRadius,
+                        border, borderRadius,
                         backgroundColor: t.completed ? t.color : "transparent",
                         color: t.completed ? "#fff" : "inherit",
                       }}
-                      aria-label="완료 토글"
                     >
                       {t.completed && <CheckSquare size={14} />}
                     </button>
-                    <span
-                      className={`flex-1 text-sm ${
-                        t.completed ? "line-through opacity-70" : ""
-                      }`}
-                    >
+                    <span className={`flex-1 text-sm ${t.completed ? "line-through opacity-70" : ""}`}>
                       {t.text}
                     </span>
                     <input
@@ -623,7 +781,6 @@ const CalendarPlanner: React.FC = () => {
                       onClick={() => deleteTodo(t.id)}
                       className="p-1.5 text-red-600 hover:bg-red-50"
                       style={{ border, borderRadius }}
-                      aria-label="삭제"
                     >
                       <X size={12} />
                     </button>
@@ -633,59 +790,51 @@ const CalendarPlanner: React.FC = () => {
             </div>
           </div>
 
-          {/* right column — calendar */}
-          <div className="col-span-12 lg:col-span-8 p-4 shadow" style={calStyle}>
+          {/* 오른쪽 — 캘린더 */}
+          <div className="col-span-12 lg:col-span-8 p-4 shadow" style={{
+            backgroundColor: calendarBgImg ? undefined : hexToRgba(calendarBgColor, containerOpacity),
+            backgroundImage: calendarBgImg ? `url(${calendarBgImg})` : undefined,
+            backgroundSize: "cover", backgroundPosition: "center",
+            borderRadius, border,
+          }}>
             <div className="flex items-center justify-between mb-3">
               <h2 className="font-semibold text-lg">
                 {currentDate.getFullYear()}년 {currentDate.getMonth() + 1}월
               </h2>
-              <div className="flex gap-2">
+              <div className="flex items-center gap-2">
                 <button
-                  onClick={() => setCurrentDate((d) => addMonths(d, -1))}
-                  className="px-2.5 py-1.5 bg-gray-100 hover:bg-gray-200"
-                  style={{ border, borderRadius }}
+                  onClick={() => saveDebounced(collectPayload())}
+                  className="px-2 py-1 bg-white/90 hover:bg-white rounded flex items-center gap-1"
+                  style={{ border }}
+                  title="즉시 동기화"
                 >
-                  이전
+                  <RefreshCw size={14} />
+                  {syncing ? "동기화…" : "동기화"}
                 </button>
-                <button
-                  onClick={() => setCurrentDate(new Date())}
-                  className="px-2.5 py-1.5 bg-gray-100 hover:bg-gray-200"
-                  style={{ border, borderRadius }}
-                >
-                  오늘
-                </button>
-                <button
-                  onClick={() => setCurrentDate((d) => addMonths(d, 1))}
-                  className="px-2.5 py-1.5 bg-gray-100 hover:bg-gray-200"
-                  style={{ border, borderRadius }}
-                >
-                  다음
-                </button>
+                <button onClick={() => setCurrentDate((d) => addMonths(d, -1))}
+                        className="px-2.5 py-1.5 bg-gray-100 hover:bg-gray-200"
+                        style={{ border, borderRadius }}>이전</button>
+                <button onClick={() => setCurrentDate(new Date())}
+                        className="px-2.5 py-1.5 bg-gray-100 hover:bg-gray-200"
+                        style={{ border, borderRadius }}>오늘</button>
+                <button onClick={() => setCurrentDate((d) => addMonths(d, 1))}
+                        className="px-2.5 py-1.5 bg-gray-100 hover:bg-gray-200"
+                        style={{ border, borderRadius }}>다음</button>
               </div>
             </div>
 
-            {/* weekdays */}
-            <div
-              className="grid grid-cols-7 mb-2"
-              style={{ gap: calGap }}
-            >
+            {/* 요일 */}
+            <div className="grid grid-cols-7 mb-2" style={{ gap: calGap }}>
               {["일", "월", "화", "수", "목", "금", "토"].map((w) => (
-                <div
-                  key={w}
+                <div key={w}
                   className="text-center font-medium bg-gray-50 flex items-center justify-center"
-                  style={{
-                    border,
-                    borderRadius,
-                    height: calHeaderH,
-                    lineHeight: `${calHeaderH}px`,
-                  }}
-                >
+                  style={{ border, borderRadius, height: calHeaderH, lineHeight: `${calHeaderH}px` }}>
                   {w}
                 </div>
               ))}
             </div>
 
-            {/* cells */}
+            {/* 날짜 셀 */}
             <div className="grid grid-cols-7" style={{ gap: calGap }}>
               {calendarDays.map((day) => {
                 const k = dateKey(day);
@@ -697,55 +846,30 @@ const CalendarPlanner: React.FC = () => {
                 const isSun = dow === 0;
                 const isSat = dow === 6;
                 const isHoliday = isSun || holidaySet.has(k);
-
-                const numberColor = isHoliday
-                  ? "#dc2626"
-                  : isSat
-                  ? "#2563eb"
-                  : isToday
-                  ? accentColor
-                  : "inherit";
+                const numberColor = isHoliday ? "#dc2626" : isSat ? "#2563eb" : isToday ? accentColor : "inherit";
 
                 return (
-                  <button
-                    key={k}
-                    onClick={() => setSelectedDate(new Date(day))}
-                    className="text-left transition-all relative"
-                    style={{
-                      minHeight: calCellMinH,
-                      padding: 8,
-                      border,
-                      borderRadius,
-                      background: isToday
-                        ? hexToRgba(accentColor, 0.1)
-                        : "rgba(255,255,255,0.85)",
-                      boxShadow: isSelected
-                        ? `0 0 0 2px ${accentColor} inset`
-                        : "none",
-                      opacity: isCurMonth ? 1 : 0.65,
-                    }}
-                  >
+                  <button key={k} onClick={() => setSelectedDate(new Date(day))}
+                          className="text-left transition-all relative"
+                          style={{
+                            minHeight: calCellMinH, padding: 8, border, borderRadius,
+                            background: isToday ? hexToRgba(accentColor, 0.1) : "rgba(255,255,255,0.85)",
+                            boxShadow: isSelected ? `0 0 0 2px ${accentColor} inset` : "none",
+                            opacity: isCurMonth ? 1 : 0.65,
+                          }}>
                     <div className="font-medium mb-1" style={{ color: numberColor }}>
                       {day.getDate()}
                     </div>
                     <div className="space-y-1">
                       {dayEvents.slice(0, 3).map((ev) => (
-                        <div
-                          key={ev.id}
-                          className="truncate px-1 py-[2px] text-white"
-                          style={{
-                            backgroundColor: ev.color,
-                            borderRadius: Math.max(6, borderRadius),
-                          }}
-                          title={ev.text}
-                        >
+                        <div key={ev.id} className="truncate px-1 py-[2px] text-white"
+                             style={{ backgroundColor: ev.color, borderRadius: Math.max(6, borderRadius) }}
+                             title={ev.text}>
                           {ev.text}
                         </div>
                       ))}
                       {dayEvents.length > 3 && (
-                        <div className="text-xs opacity-70">
-                          +{dayEvents.length - 3}
-                        </div>
+                        <div className="text-xs opacity-70">+{dayEvents.length - 3}</div>
                       )}
                     </div>
                   </button>
@@ -753,7 +877,7 @@ const CalendarPlanner: React.FC = () => {
               })}
             </div>
 
-            {/* selected day editor */}
+            {/* 선택 날짜 편집 */}
             <div className="pt-3 mt-3" style={{ borderTop: border }}>
               <h3 className="font-semibold mb-2">
                 {selectedDate.getMonth() + 1}월 {selectedDate.getDate()}일 일정
@@ -786,80 +910,55 @@ const CalendarPlanner: React.FC = () => {
 
               <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
                 {selectedEvents.map((ev) => (
-                  <div
-                    key={ev.id}
-                    className="flex items-center gap-2 p-2 bg-gray-50"
-                    style={{ border, borderRadius }}
-                  >
+                  <div key={ev.id} className="flex items-center gap-2 p-2 bg-gray-50"
+                       style={{ border, borderRadius }}>
                     {editingEvent === ev.id ? (
                       <input
                         defaultValue={ev.text}
                         onKeyDown={(e) =>
                           e.key === "Enter" &&
-                          editEventText(
-                            selectedKey,
-                            ev.id,
-                            (e.target as HTMLInputElement).value
-                          )
+                          editEventText(selectedKey, ev.id, (e.target as HTMLInputElement).value)
                         }
                         onBlur={(e) =>
-                          editEventText(
-                            selectedKey,
-                            ev.id,
-                            (e.target as HTMLInputElement).value
-                          )
+                          editEventText(selectedKey, ev.id, (e.target as HTMLInputElement).value)
                         }
                         className="flex-1 px-2 py-1 bg-white"
                         style={{ border, borderRadius }}
                         autoFocus
                       />
                     ) : (
-                      <div
-                        className="flex-1 px-2 py-1 text-white"
-                        style={{ backgroundColor: ev.color, border, borderRadius }}
-                      >
+                      <div className="flex-1 px-2 py-1 text-white"
+                           style={{ backgroundColor: ev.color, border, borderRadius }}>
                         {ev.text}
                       </div>
                     )}
                     <input
                       type="color"
                       defaultValue={ev.color}
-                      onChange={(e) =>
-                        setEventColor(selectedKey, ev.id, e.target.value)
-                      }
+                      onChange={(e) => setEventColor(selectedKey, ev.id, e.target.value)}
                       title="색상 변경"
                       className="w-8 h-8 p-0 cursor-pointer"
                       style={{ border, borderRadius, background: "#fff" }}
                     />
-                    <button
-                      onClick={() =>
-                        setEditingEvent(editingEvent === ev.id ? null : ev.id)
-                      }
-                      className="p-1 hover:bg-gray-100"
-                      style={{ border, borderRadius }}
-                    >
+                    <button onClick={() => setEditingEvent(editingEvent === ev.id ? null : ev.id)}
+                            className="p-1 hover:bg-gray-100" style={{ border, borderRadius }}>
                       <Edit3 size={12} />
                     </button>
-                    <button
-                      onClick={() => deleteEventLocal(selectedKey, ev.id)}
-                      className="p-1 text-red-700 hover:bg-red-50"
-                      style={{ border, borderRadius }}
-                    >
+                    <button onClick={() => deleteEventLocal(selectedKey, ev.id)}
+                            className="p-1 text-red-700 hover:bg-red-50" style={{ border, borderRadius }}>
                       <X size={12} />
                     </button>
                   </div>
                 ))}
                 {!selectedEvents.length && (
-                  <p className="text-center opacity-70 py-5 text-sm">
-                    일정이 없습니다.
-                  </p>
+                  <p className="text-center opacity-70 py-5 text-sm">일정이 없습니다.</p>
                 )}
               </div>
             </div>
           </div>
         </div>
 
-        {/* settings (toggle at bottom) */}
+        {/* 설정 토글 (하단) */}
         <div className="mt-4">
           <button
             onClick={() => setShowSettings((s) => !s)}
@@ -872,175 +971,104 @@ const CalendarPlanner: React.FC = () => {
           </button>
 
           {showSettings && (
-            <div
-              className="mt-3 p-4 bg-white/95 shadow space-y-4 text-sm"
-              style={{ border, borderRadius }}
-            >
+            <div className="mt-3 p-4 bg-white/95 shadow space-y-4 text-sm"
+                 style={{ border, borderRadius }}>
               {/* 빠른 동작 */}
               <div className="grid gap-2 md:grid-cols-4">
                 <button
-                  onClick={() =>
-                    alert("변경 시 자동 저장됩니다. (로컬 저장소)")
-                  }
+                  onClick={() => alert("변경 시 자동 저장됩니다. (로컬/클라우드)")}
                   className="px-2 py-2 bg-gray-100 hover:bg-gray-200"
                   style={{ border, borderRadius }}
                 >
                   <SaveIcon className="inline mr-1" size={14} />
                   저장 알림
                 </button>
-                <button
-                  onClick={exportJSON}
-                  className="px-2 py-2 bg-gray-100 hover:bg-gray-200"
-                  style={{ border, borderRadius }}
-                >
+                <button onClick={exportJSON}
+                        className="px-2 py-2 bg-gray-100 hover:bg-gray-200"
+                        style={{ border, borderRadius }}>
                   <Download className="inline mr-1" size={14} />
                   백업 내보내기
                 </button>
-                <button
-                  onClick={() => refImportJson.current?.click()}
-                  className="px-2 py-2 bg-gray-100 hover:bg-gray-200"
-                  style={{ border, borderRadius }}
-                >
+                <button onClick={() => refImportJson.current?.click()}
+                        className="px-2 py-2 bg-gray-100 hover:bg-gray-200"
+                        style={{ border, borderRadius }}>
                   <FileUp className="inline mr-1" size={14} />
                   백업 가져오기
                 </button>
-                <button
-                  onClick={resetAll}
-                  className="px-2 py-2 bg-red-50 hover:bg-red-100 text-red-700"
-                  style={{ border, borderRadius }}
-                >
+                <button onClick={resetAll}
+                        className="px-2 py-2 bg-red-50 hover:bg-red-100 text-red-700"
+                        style={{ border, borderRadius }}>
                   <RotateCcw className="inline mr-1" size={14} />
                   전체 초기화
                 </button>
               </div>
 
-              {/* 전체 설정 */}
+              {/* 전체 테마/크기/투명도 */}
               <div className="grid gap-2 md:grid-cols-2">
                 <div className="grid grid-cols-2 gap-2">
-                  <div
-                    className="flex items-center gap-2 p-2"
-                    style={{ border, borderRadius }}
-                  >
-                    <Palette size={14} />
-                    <span>테마색</span>
-                    <input
-                      type="color"
-                      value={accentColor}
+                  <div className="flex items-center gap-2 p-2" style={{ border, borderRadius }}>
+                    <Palette size={14} /><span>테마색</span>
+                    <input type="color" value={accentColor}
                       onChange={(e) => setAccentColor(e.target.value)}
-                      className="w-7 h-7 cursor-pointer ml-auto"
-                    />
+                      className="w-7 h-7 cursor-pointer ml-auto" />
                   </div>
-                  <div
-                    className="flex items-center gap-2 p-2"
-                    style={{ border, borderRadius }}
-                  >
+                  <div className="flex items-center gap-2 p-2" style={{ border, borderRadius }}>
                     <span>투명도</span>
-                    <input
-                      type="range"
-                      min={0.5}
-                      max={1}
-                      step={0.01}
+                    <input type="range" min={0.5} max={1} step={0.01}
                       value={containerOpacity}
                       onChange={(e) => setContainerOpacity(Number(e.target.value))}
-                      className="flex-1"
-                    />
-                    <span className="w-10 text-right">
-                      {Math.round(containerOpacity * 100)}%
-                    </span>
+                      className="flex-1" />
+                    <span className="w-10 text-right">{Math.round(containerOpacity * 100)}%</span>
                   </div>
-                  <div
-                    className="flex items-center gap-2 p-2 col-span-2"
-                    style={{ border, borderRadius }}
-                  >
+                  <div className="flex items-center gap-2 p-2 col-span-2" style={{ border, borderRadius }}>
                     <span>라운드</span>
-                    <input
-                      type="range"
-                      min={0}
-                      max={24}
-                      step={1}
+                    <input type="range" min={0} max={24} step={1}
                       value={borderRadius}
                       onChange={(e) => setBorderRadius(Number(e.target.value))}
-                      className="flex-1"
-                    />
+                      className="flex-1" />
                     <span className="w-12 text-right">{borderRadius}px</span>
                   </div>
-                  <div
-                    className="flex items-center gap-2 p-2"
-                    style={{ border, borderRadius }}
-                  >
+                  <div className="flex items-center gap-2 p-2" style={{ border, borderRadius }}>
                     <span>보더 표시</span>
-                    <input
-                      type="checkbox"
-                      checked={borderEnabled}
+                    <input type="checkbox" checked={borderEnabled}
                       onChange={(e) => setBorderEnabled(e.target.checked)}
-                      className="ml-auto"
-                    />
+                      className="ml-auto" />
                   </div>
-                  <div
-                    className="flex items-center gap-2 p-2"
-                    style={{ border, borderRadius }}
-                  >
+                  <div className="flex items-center gap-2 p-2" style={{ border, borderRadius }}>
                     <span>글자 크기</span>
-                    <input
-                      type="range"
-                      min={0.9}
-                      max={1.3}
-                      step={0.01}
+                    <input type="range" min={0.9} max={1.3} step={0.01}
                       value={fontScale}
                       onChange={(e) => setFontScale(Number(e.target.value))}
-                      className="flex-1"
-                    />
-                    <span className="w-12 text-right">
-                      {Math.round(fontScale * 100)}%
-                    </span>
+                      className="flex-1" />
+                    <span className="w-12 text-right">{Math.round(fontScale * 100)}%</span>
                   </div>
                 </div>
 
                 {/* 페이지 배경: 그라데이션/이미지 */}
                 <div className="grid grid-cols-2 gap-2">
-                  <div
-                    className="flex items-center gap-2 p-2"
-                    style={{ border, borderRadius }}
-                  >
+                  <div className="flex items-center gap-2 p-2" style={{ border, borderRadius }}>
                     <span>그라데이션 시작</span>
-                    <input
-                      type="color"
-                      value={gradientStart}
+                    <input type="color" value={gradientStart}
                       onChange={(e) => setGradientStart(e.target.value)}
-                      className="w-7 h-7 cursor-pointer ml-auto"
-                    />
+                      className="w-7 h-7 cursor-pointer ml-auto" />
                   </div>
-                  <div
-                    className="flex items-center gap-2 p-2"
-                    style={{ border, borderRadius }}
-                  >
+                  <div className="flex items-center gap-2 p-2" style={{ border, borderRadius }}>
                     <span>그라데이션 끝</span>
-                    <input
-                      type="color"
-                      value={gradientEnd}
+                    <input type="color" value={gradientEnd}
                       onChange={(e) => setGradientEnd(e.target.value)}
-                      className="w-7 h-7 cursor-pointer ml-auto"
-                    />
+                      className="w-7 h-7 cursor-pointer ml-auto" />
                   </div>
-                  <div
-                    className="flex items-center gap-2 p-2 col-span-2"
-                    style={{ border, borderRadius }}
-                  >
+                  <div className="flex items-center gap-2 p-2 col-span-2" style={{ border, borderRadius }}>
                     <span>전체 배경 이미지</span>
-                    <button
-                      onClick={() => refGlobalBg.current?.click()}
+                    <button onClick={() => refGlobalBg.current?.click()}
                       className="ml-auto px-2 py-1 bg-gray-100 hover:bg-gray-200"
-                      style={{ border, borderRadius }}
-                    >
-                      <Upload size={12} className="inline mr-1" />
-                      업로드
+                      style={{ border, borderRadius }}>
+                      <Upload size={12} className="inline mr-1" /> 업로드
                     </button>
                     {backgroundImage && (
-                      <button
-                        onClick={() => setBackgroundImage("")}
+                      <button onClick={() => setBackgroundImage("")}
                         className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-700"
-                        style={{ border, borderRadius }}
-                      >
+                        style={{ border, borderRadius }}>
                         제거
                       </button>
                     )}
@@ -1062,66 +1090,42 @@ const CalendarPlanner: React.FC = () => {
                   </div>
                   <div className="flex items-center gap-2 p-2" style={{ border, borderRadius }}>
                     <span>글자색</span>
-                    <input
-                      type="color"
-                      value={headerTextColor}
+                    <input type="color" value={headerTextColor}
                       onChange={(e) => setHeaderTextColor(e.target.value)}
-                      className="w-7 h-7 cursor-pointer ml-auto"
-                    />
+                      className="w-7 h-7 cursor-pointer ml-auto" />
                   </div>
                   <div className="flex items-center gap-2 p-2" style={{ border, borderRadius }}>
                     <span>배경색</span>
-                    <input
-                      type="color"
-                      value={headerBgColor}
+                    <input type="color" value={headerBgColor}
                       onChange={(e) => setHeaderBgColor(e.target.value)}
-                      className="w-7 h-7 cursor-pointer ml-auto"
-                    />
+                      className="w-7 h-7 cursor-pointer ml-auto" />
                   </div>
                   <div className="flex items-center gap-2 p-2 col-span-2" style={{ border, borderRadius }}>
                     <span>정렬</span>
                     <div className="ml-auto grid grid-cols-3 gap-1">
-                      {[
-                        { v: "left" as const, I: AlignLeft },
-                        { v: "center" as const, I: AlignCenter },
-                        { v: "right" as const, I: AlignRight },
-                      ].map(({ v, I }) => (
-                        <button
-                          key={v}
-                          onClick={() => setHeaderTextAlign(v)}
-                          className="px-2 py-1"
-                          style={{
-                            border,
-                            borderRadius,
-                            background:
-                              headerTextAlign === v ? accentColor : "transparent",
-                            color: headerTextAlign === v ? "#fff" : "inherit",
-                          }}
-                        >
-                          <I size={14} />
-                        </button>
+                      {[{v:"left",I:AlignLeft},{v:"center",I:AlignCenter},{v:"right",I:AlignRight}].map(({v,I})=>(
+                        <button key={v} onClick={()=>setHeaderTextAlign(v as any)}
+                          className="px-2 py-1" style={{
+                            border, borderRadius,
+                            background: headerTextAlign===v ? accentColor : "transparent",
+                            color: headerTextAlign===v ? "#fff" : "inherit",
+                          }}><I size={14}/></button>
                       ))}
                     </div>
                   </div>
                 </div>
-
                 <div className="grid grid-cols-2 gap-2">
                   <div className="flex items-center gap-2 p-2 col-span-2" style={{ border, borderRadius }}>
                     <span>헤더 배경 이미지</span>
-                    <button
-                      onClick={() => refHeaderImg.current?.click()}
+                    <button onClick={() => refHeaderImg.current?.click()}
                       className="ml-auto px-2 py-1 bg-gray-100 hover:bg-gray-200"
-                      style={{ border, borderRadius }}
-                    >
-                      <ImageIcon size={12} className="inline mr-1" />
-                      업로드
+                      style={{ border, borderRadius }}>
+                      <ImageIcon size={12} className="inline mr-1" /> 업로드
                     </button>
                     {headerImage && (
-                      <button
-                        onClick={() => setHeaderImage("")}
+                      <button onClick={() => setHeaderImage("")}
                         className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-700"
-                        style={{ border, borderRadius }}
-                      >
+                        style={{ border, borderRadius }}>
                         제거
                       </button>
                     )}
@@ -1129,63 +1133,45 @@ const CalendarPlanner: React.FC = () => {
                 </div>
               </div>
 
-              {/* 꾸미기/현재시각 컨테이너 */}
+              {/* 박스 배경/이미지들 */}
               <div className="grid gap-2 md:grid-cols-2">
                 <div className="grid grid-cols-2 gap-2">
                   <div className="flex items-center gap-2 p-2" style={{ border, borderRadius }}>
                     <span>꾸미기 배경색</span>
-                    <input
-                      type="color"
-                      value={decorCardBgColor}
+                    <input type="color" value={decorCardBgColor}
                       onChange={(e) => setDecorCardBgColor(e.target.value)}
-                      className="w-7 h-7 cursor-pointer ml-auto"
-                    />
+                      className="w-7 h-7 cursor-pointer ml-auto" />
                   </div>
                   <div className="flex items-center gap-2 p-2" style={{ border, borderRadius }}>
                     <span>현재시각 배경색</span>
-                    <input
-                      type="color"
-                      value={timeCardBgColor}
+                    <input type="color" value={timeCardBgColor}
                       onChange={(e) => setTimeCardBgColor(e.target.value)}
-                      className="w-7 h-7 cursor-pointer ml-auto"
-                    />
+                      className="w-7 h-7 cursor-pointer ml-auto" />
                   </div>
                   <div className="flex items-center gap-2 p-2 col-span-2" style={{ border, borderRadius }}>
                     <span>꾸미기 배경 이미지</span>
-                    <button
-                      onClick={() => refDecorImg.current?.click()}
+                    <button onClick={() => refDecorImg.current?.click()}
                       className="ml-auto px-2 py-1 bg-gray-100 hover:bg-gray-200"
-                      style={{ border, borderRadius }}
-                    >
-                      <Upload size={12} /> 업로드
+                      style={{ border, borderRadius }}>
+                      <Upload size={12}/> 업로드
                     </button>
                     {decorCardBgImg && (
-                      <button
-                        onClick={() => setDecorCardBgImg("")}
+                      <button onClick={() => setDecorCardBgImg("")}
                         className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-700"
-                        style={{ border, borderRadius }}
-                      >
-                        제거
-                      </button>
+                        style={{ border, borderRadius }}>제거</button>
                     )}
                   </div>
                   <div className="flex items-center gap-2 p-2 col-span-2" style={{ border, borderRadius }}>
                     <span>현재시각 배경 이미지</span>
-                    <button
-                      onClick={() => refTimeImg.current?.click()}
+                    <button onClick={() => refTimeImg.current?.click()}
                       className="ml-auto px-2 py-1 bg-gray-100 hover:bg-gray-200"
-                      style={{ border, borderRadius }}
-                    >
-                      <Upload size={12} /> 업로드
+                      style={{ border, borderRadius }}>
+                      <Upload size={12}/> 업로드
                     </button>
                     {timeCardBgImg && (
-                      <button
-                        onClick={() => setTimeCardBgImg("")}
+                      <button onClick={() => setTimeCardBgImg("")}
                         className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-700"
-                        style={{ border, borderRadius }}
-                      >
-                        제거
-                      </button>
+                        style={{ border, borderRadius }}>제거</button>
                     )}
                   </div>
                 </div>
@@ -1193,178 +1179,111 @@ const CalendarPlanner: React.FC = () => {
                 <div className="grid grid-cols-2 gap-2">
                   <div className="flex items-center gap-2 p-2" style={{ border, borderRadius }}>
                     <span>투두 배경색</span>
-                    <input
-                      type="color"
-                      value={todoBgColor}
+                    <input type="color" value={todoBgColor}
                       onChange={(e) => setTodoBgColor(e.target.value)}
-                      className="w-7 h-7 cursor-pointer ml-auto"
-                    />
+                      className="w-7 h-7 cursor-pointer ml-auto" />
                   </div>
                   <div className="flex items-center gap-2 p-2" style={{ border, borderRadius }}>
                     <span>달력 배경색</span>
-                    <input
-                      type="color"
-                      value={calendarBgColor}
+                    <input type="color" value={calendarBgColor}
                       onChange={(e) => setCalendarBgColor(e.target.value)}
-                      className="w-7 h-7 cursor-pointer ml-auto"
-                    />
+                      className="w-7 h-7 cursor-pointer ml-auto" />
                   </div>
                   <div className="flex items-center gap-2 p-2" style={{ border, borderRadius }}>
                     <span>투두 배경 이미지</span>
-                    <button
-                      onClick={() => refTodoImg.current?.click()}
+                    <button onClick={() => refTodoImg.current?.click()}
                       className="ml-auto px-2 py-1 bg-gray-100 hover:bg-gray-200"
-                      style={{ border, borderRadius }}
-                    >
-                      <Upload size={12} /> 업로드
+                      style={{ border, borderRadius }}>
+                      <Upload size={12}/> 업로드
                     </button>
                     {todoBgImg && (
-                      <button
-                        onClick={() => setTodoBgImg("")}
+                      <button onClick={() => setTodoBgImg("")}
                         className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-700"
-                        style={{ border, borderRadius }}
-                      >
-                        제거
-                      </button>
+                        style={{ border, borderRadius }}>제거</button>
                     )}
                   </div>
                   <div className="flex items-center gap-2 p-2" style={{ border, borderRadius }}>
                     <span>달력 배경 이미지</span>
-                    <button
-                      onClick={() => refCalImg.current?.click()}
+                    <button onClick={() => refCalImg.current?.click()}
                       className="ml-auto px-2 py-1 bg-gray-100 hover:bg-gray-200"
-                      style={{ border, borderRadius }}
-                    >
-                      <Upload size={12} /> 업로드
+                      style={{ border, borderRadius }}>
+                      <Upload size={12}/> 업로드
                     </button>
                     {calendarBgImg && (
-                      <button
-                        onClick={() => setCalendarBgImg("")}
+                      <button onClick={() => setCalendarBgImg("")}
                         className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-700"
-                        style={{ border, borderRadius }}
-                      >
-                        제거
-                      </button>
+                        style={{ border, borderRadius }}>제거</button>
                     )}
                   </div>
                 </div>
               </div>
 
-              {/* 달력 디자인/사이즈 조절 */}
+              {/* 달력 사이즈/라인 */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                 <div className="p-2" style={{ border, borderRadius }}>
                   <label className="block text-xs mb-1">셀 최소 높이</label>
-                  <input
-                    type="range"
-                    min={60}
-                    max={150}
-                    step={2}
-                    value={calCellMinH}
-                    onChange={(e) => setCalCellMinH(Number(e.target.value))}
-                    className="w-full"
-                  />
+                  <input type="range" min={60} max={150} step={2}
+                    value={calCellMinH} onChange={(e)=>setCalCellMinH(Number(e.target.value))}
+                    className="w-full" />
                   <div className="text-right text-xs mt-1">{calCellMinH}px</div>
                 </div>
                 <div className="p-2" style={{ border, borderRadius }}>
                   <label className="block text-xs mb-1">요일 헤더 높이</label>
-                  <input
-                    type="range"
-                    min={28}
-                    max={64}
-                    step={1}
-                    value={calHeaderH}
-                    onChange={(e) => setCalHeaderH(Number(e.target.value))}
-                    className="w-full"
-                  />
+                  <input type="range" min={28} max={64} step={1}
+                    value={calHeaderH} onChange={(e)=>setCalHeaderH(Number(e.target.value))}
+                    className="w-full" />
                   <div className="text-right text-xs mt-1">{calHeaderH}px</div>
                 </div>
                 <div className="p-2" style={{ border, borderRadius }}>
                   <label className="block text-xs mb-1">격자 간격</label>
-                  <input
-                    type="range"
-                    min={0}
-                    max={16}
-                    step={1}
-                    value={calGap}
-                    onChange={(e) => setCalGap(Number(e.target.value))}
-                    className="w-full"
-                  />
+                  <input type="range" min={0} max={16} step={1}
+                    value={calGap} onChange={(e)=>setCalGap(Number(e.target.value))}
+                    className="w-full" />
                   <div className="text-right text-xs mt-1">{calGap}px</div>
                 </div>
                 <div className="p-2" style={{ border, borderRadius }}>
                   <label className="block text-xs mb-1">라인 색상</label>
-                  <input
-                    type="color"
-                    value={calLineColor}
-                    onChange={(e) => setCalLineColor(e.target.value)}
-                    className="w-8 h-8 cursor-pointer"
-                  />
+                  <input type="color" value={calLineColor}
+                    onChange={(e)=>setCalLineColor(e.target.value)}
+                    className="w-8 h-8 cursor-pointer" />
                 </div>
               </div>
 
-              {/* 휴일(수동) */}
+              {/* 휴일 */}
               <div className="p-2" style={{ border, borderRadius }}>
-                <label className="block text-xs mb-1">
-                  휴일(YYYY-MM-DD, 공백/줄바꿈/쉼표 구분)
-                </label>
-                <textarea
-                  value={holidayText}
-                  onChange={(e) => setHolidayText(e.target.value)}
-                  rows={3}
-                  className="w-full p-2 bg-white"
-                  style={{ border, borderRadius }}
-                  placeholder="예) 2025-01-01, 2025-03-01  2025-05-05"
-                />
-                <p className="text-[11px] mt-1 opacity-70">
-                  일요일은 자동 빨간색, 토요일은 파란색으로 표시됩니다.
-                </p>
+                <label className="block text-xs mb-1">휴일(YYYY-MM-DD, 공백/줄바꿈/쉼표 구분)</label>
+                <textarea value={holidayText} onChange={(e)=>setHolidayText(e.target.value)}
+                  rows={3} className="w-full p-2 bg-white" style={{ border, borderRadius }}
+                  placeholder="예) 2025-01-01, 2025-03-01  2025-05-05" />
+                <p className="text-[11px] mt-1 opacity-70">일요일은 자동 빨간색, 토요일은 파란색입니다.</p>
               </div>
 
-              {/* Google Calendar(ICS) 이벤트 불러오기 */}
+              {/* Google Calendar ICS */}
               <div className="grid gap-2 md:grid-cols-2">
                 <div className="grid grid-cols-2 gap-2">
-                  <div
-                    className="flex items-center gap-2 p-2 col-span-2"
-                    style={{ border, borderRadius }}
-                  >
+                  <div className="flex items-center gap-2 p-2 col-span-2" style={{ border, borderRadius }}>
                     <LinkIcon size={14} />
-                    <input
-                      type="text"
-                      value={gcalIcsUrl}
-                      onChange={(e) => setGcalIcsUrl(e.target.value)}
+                    <input type="text" value={gcalIcsUrl}
+                      onChange={(e)=>setGcalIcsUrl(e.target.value)}
                       className="flex-1 px-2 py-1 bg-white"
                       style={{ border, borderRadius }}
-                      placeholder="Google Calendar 공개 ICS 주소"
-                    />
+                      placeholder="Google Calendar 공개 ICS 주소" />
                   </div>
-                  <div
-                    className="flex items-center gap-2 p-2"
-                    style={{ border, borderRadius }}
-                  >
-                    <button
-                      onClick={importIcsFromUrl}
-                      disabled={isImportingIcs}
+                  <div className="flex items-center gap-2 p-2" style={{ border, borderRadius }}>
+                    <button onClick={importIcsFromUrl} disabled={isImportingIcs}
                       className="px-2 py-1 bg-gray-100 hover:bg-gray-200 flex items-center gap-2 disabled:opacity-60"
-                      style={{ border, borderRadius }}
-                      title="주소에서 불러오기"
-                    >
-                      <Globe size={14} />{" "}
-                      {isImportingIcs ? "불러오는 중…" : "URL에서 불러오기"}
+                      style={{ border, borderRadius }}>
+                      <Globe size={14} /> {isImportingIcs ? "불러오는 중…" : "URL에서 불러오기"}
                     </button>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
-                  <div
-                    className="flex items-center gap-2 p-2 col-span-2"
-                    style={{ border, borderRadius }}
-                  >
+                  <div className="flex items-center gap-2 p-2 col-span-2" style={{ border, borderRadius }}>
                     <span>ICS 파일 업로드</span>
-                    <button
-                      onClick={() => refIcsFile.current?.click()}
+                    <button onClick={()=>refIcsFile.current?.click()}
                       className="ml-auto px-2 py-1 bg-gray-100 hover:bg-gray-200"
-                      style={{ border, borderRadius }}
-                    >
+                      style={{ border, borderRadius }}>
                       <FileUp size={12} /> 업로드
                     </button>
                   </div>
@@ -1376,68 +1295,32 @@ const CalendarPlanner: React.FC = () => {
       </div>
 
       {/* hidden inputs */}
-      <input
-        ref={refGlobalBg}
-        type="file"
-        accept="image/*"
-        onChange={(e) => e.target.files?.[0] && loadDataUrl(e.target.files[0], setBackgroundImage)}
-        className="hidden"
-      />
-      <input
-        ref={refHeaderImg}
-        type="file"
-        accept="image/*"
-        onChange={(e) => e.target.files?.[0] && loadDataUrl(e.target.files[0], setHeaderImage)}
-        className="hidden"
-      />
-      <input
-        ref={refDecorImg}
-        type="file"
-        accept="image/*"
-        onChange={(e) => e.target.files?.[0] && loadDataUrl(e.target.files[0], setDecorCardBgImg)}
-        className="hidden"
-      />
-      <input
-        ref={refTimeImg}
-        type="file"
-        accept="image/*"
-        onChange={(e) => e.target.files?.[0] && loadDataUrl(e.target.files[0], setTimeCardBgImg)}
-        className="hidden"
-      />
-      <input
-        ref={refTodoImg}
-        type="file"
-        accept="image/*"
-        onChange={(e) => e.target.files?.[0] && loadDataUrl(e.target.files[0], setTodoBgImg)}
-        className="hidden"
-      />
-      <input
-        ref={refCalImg}
-        type="file"
-        accept="image/*"
-        onChange={(e) => e.target.files?.[0] && loadDataUrl(e.target.files[0], setCalendarBgImg)}
-        className="hidden"
-      />
-      <input
-        ref={refImportJson}
-        type="file"
-        accept="application/json"
-        onChange={(e) => e.target.files?.[0] && importJSON(e.target.files[0])}
-        className="hidden"
-      />
-      <input
-        ref={refIcsFile}
-        type="file"
-        accept=".ics,text/calendar"
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) importIcsFromFile(f);
-        }}
-        className="hidden"
-      />
+      <input ref={refGlobalBg} type="file" accept="image/*"
+             onChange={(e)=>e.target.files?.[0] && loadDataUrl(e.target.files[0], setBackgroundImage)}
+             className="hidden" />
+      <input ref={refHeaderImg} type="file" accept="image/*"
+             onChange={(e)=>e.target.files?.[0] && loadDataUrl(e.target.files[0], setHeaderImage)}
+             className="hidden" />
+      <input ref={refDecorImg} type="file" accept="image/*"
+             onChange={(e)=>e.target.files?.[0] && loadDataUrl(e.target.files[0], setDecorCardBgImg)}
+             className="hidden" />
+      <input ref={refTimeImg} type="file" accept="image/*"
+             onChange={(e)=>e.target.files?.[0] && loadDataUrl(e.target.files[0], setTimeCardBgImg)}
+             className="hidden" />
+      <input ref={refTodoImg} type="file" accept="image/*"
+             onChange={(e)=>e.target.files?.[0] && loadDataUrl(e.target.files[0], setTodoBgImg)}
+             className="hidden" />
+      <input ref={refCalImg} type="file" accept="image/*"
+             onChange={(e)=>e.target.files?.[0] && loadDataUrl(e.target.files[0], setCalendarBgImg)}
+             className="hidden" />
+      <input ref={refImportJson} type="file" accept="application/json"
+             onChange={(e)=>e.target.files?.[0] && importJSON(e.target.files[0])}
+             className="hidden" />
+      <input ref={refIcsFile} type="file" accept=".ics,text/calendar"
+             onChange={(e)=>{const f=e.target.files?.[0]; if(f) importIcsFromFile(f);}}
+             className="hidden" />
     </div>
   );
 };
 
 export default CalendarPlanner;
-
