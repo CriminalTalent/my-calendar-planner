@@ -25,76 +25,66 @@ import {
   ChevronUp,
 } from "lucide-react";
 
-/* ---------------- 유틸 ---------------- */
+/* ============ 유틸 ============ */
 type TEvent = { id: number; text: string; color: string };
 type TTodo = { id: number; text: string; completed: boolean; color: string };
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
-const keyOf = (d: Date) =>
+const dateKey = (d: Date) =>
   `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-const addMonths = (d: Date, n: number) =>
-  new Date(d.getFullYear(), d.getMonth() + n, 1);
+const addMonths = (d: Date, m: number) =>
+  new Date(d.getFullYear(), d.getMonth() + m, 1);
 const addDays = (d: Date, n: number) => {
   const t = new Date(d);
   t.setDate(t.getDate() + n);
   return t;
 };
 const hexToRgba = (hex: string, a = 1) => {
-  const s = hex.replace("#", "");
-  const full = s.length === 3 ? s.split("").map(c => c + c).join("") : s;
-  const v = parseInt(full, 16);
-  const r = (v >> 16) & 255, g = (v >> 8) & 255, b = v & 255;
+  const s = hex.startsWith("#") ? hex.slice(1) : hex;
+  const f = s.length === 3 ? s.split("").map((c) => c + c).join("") : s;
+  const v = parseInt(f, 16);
+  const r = (v >> 16) & 255,
+    g = (v >> 8) & 255,
+    b = v & 255;
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 };
 
-const STORAGE_KEY = "MCP_v7";
+const STORAGE_KEY = "MCP_v8";
 
-/* -------- ICS 파서(SUMMARY 유지) -------- */
-type IcsEvent = { dtstart: string; dtend?: string; summary?: string };
-function parseICS(text: string): IcsEvent[] {
-  const events: IcsEvent[] = [];
-  const lines = text.replace(/\r/g, "").split("\n");
-  let cur: any = null;
-  for (let line of lines) {
+/* ---- 간단 ICS 파서 (SUMMARY 사용) ---- */
+type IcsEvent = { dtstart?: string; summary?: string };
+const parseICS = (txt: string): IcsEvent[] => {
+  const out: IcsEvent[] = [];
+  const lines = txt.replace(/\r/g, "").split("\n");
+  let cur: IcsEvent | null = null;
+  for (const line of lines) {
     if (line === "BEGIN:VEVENT") cur = {};
     else if (line === "END:VEVENT") {
-      if (cur?.dtstart) events.push(cur);
+      if (cur && cur.dtstart) out.push(cur);
       cur = null;
     } else if (cur) {
-      if (/^[ \t]/.test(line)) {
-        const last = Object.keys(cur).pop();
-        if (last) cur[last] += line.trim();
-        continue;
-      }
-      if (line.startsWith("DTSTART")) {
-        const v = line.split(":").pop() || "";
-        cur.dtstart = v.trim();
-      } else if (line.startsWith("DTEND")) {
-        const v = line.split(":").pop() || "";
-        cur.dtend = v.trim();
-      } else if (line.startsWith("SUMMARY")) {
-        const v = line.split(":").slice(1).join(":");
-        cur.summary = (v || "").trim();
-      }
+      if (line.startsWith("DTSTART")) cur.dtstart = line.split(":").pop() || "";
+      if (line.startsWith("SUMMARY"))
+        cur.summary = line.split(":").slice(1).join(":").trim();
     }
   }
-  return events;
-}
-function holidayMapFromICS(icsText: string, year: number): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const e of parseICS(icsText)) {
-    const ymd = (e.dtstart || "").slice(0, 8);
+  return out;
+};
+const mapFromICS = (txt: string, year: number) => {
+  const map: Record<string, string> = {};
+  for (const it of parseICS(txt)) {
+    const ymd = (it.dtstart || "").slice(0, 8);
     if (ymd.length !== 8) continue;
     const y = Number(ymd.slice(0, 4));
     if (y !== year) continue;
     const mm = ymd.slice(4, 6);
     const dd = ymd.slice(6, 8);
-    out[`${y}-${mm}-${dd}`] = e.summary || "휴일";
+    map[`${y}-${mm}-${dd}`] = it.summary || "휴일";
   }
-  return out;
-}
+  return map;
+};
 
-/* ---------------- 컴포넌트 ---------------- */
+/* ============ 컴포넌트 ============ */
 const CalendarPlanner: React.FC = () => {
   /* 핵심 상태 */
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -105,7 +95,7 @@ const CalendarPlanner: React.FC = () => {
   const [newTodo, setNewTodo] = useState("");
   const [editingEvent, setEditingEvent] = useState<number | null>(null);
 
-  /* 테마/전역 */
+  /* 전역 테마 */
   const [accentColor, setAccentColor] = useState("#3b82f6");
   const [globalBg1, setGlobalBg1] = useState("#667eea");
   const [globalBg2, setGlobalBg2] = useState("#764ba2");
@@ -116,7 +106,7 @@ const CalendarPlanner: React.FC = () => {
   const [showBorders, setShowBorders] = useState(true);
   const [isDark, setIsDark] = useState(false);
 
-  /* 헤더(제목만) */
+  /* 헤더(제목만) – 2.5배 */
   const [headerTitle, setHeaderTitle] = useState("나의 플래너");
   const [headerImage, setHeaderImage] = useState("");
   const [headerBg, setHeaderBg] = useState("#ffffff");
@@ -126,23 +116,21 @@ const CalendarPlanner: React.FC = () => {
   const [editHeader, setEditHeader] = useState(false);
   const [showHeaderSettings, setShowHeaderSettings] = useState(false);
 
-  /* 현재 시각 (표시만) */
+  /* 현재 시각(표시용) + 꾸미기 */
   const [now, setNow] = useState(new Date());
   useEffect(() => {
     const id = window.setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(id);
+    return () => window.clearInterval(id);
   }, []);
   const [timeCardBgColor, setTimeCardBgColor] = useState("#f3f4f6");
   const [timeCardBgImg, setTimeCardBgImg] = useState("");
   const [timeBoxColor, setTimeBoxColor] = useState("#3b82f6");
   const [timeBoxImg, setTimeBoxImg] = useState("");
-
-  /* 꾸미기 이미지(현재 시각 카드 상단, 표시만) */
   const [timeDecorImg, setTimeDecorImg] = useState("");
   const [timeDecorRatio, setTimeDecorRatio] =
     useState<"3/1" | "21/9" | "16/9">("3/1");
 
-  /* TODO 카드 */
+  /* Todo */
   const [todoBgColor, setTodoBgColor] = useState("#f3f4f6");
   const [todoBgImg, setTodoBgImg] = useState("");
 
@@ -156,111 +144,100 @@ const CalendarPlanner: React.FC = () => {
   const [maxEventsPerCell, setMaxEventsPerCell] = useState(3);
   const [highlightToday, setHighlightToday] = useState(true);
   const [calendarGap, setCalendarGap] = useState(6);
-  type BadgeStyle = "dot" | "pill" | "strip";
-  const [badgeStyle, setBadgeStyle] = useState<BadgeStyle>("dot");
-  const [startOnMonday, setStartOnMonday] = useState<boolean>(false);
+  const [badgeStyle, setBadgeStyle] =
+    useState<"dot" | "pill" | "strip">("dot");
+  const [startOnMonday, setStartOnMonday] = useState(false);
 
   /* 휴일/주말 */
-  const [holidayText, setHolidayText] = useState<string>("");
+  const [holidayText, setHolidayText] = useState("");
   const [holidayMap, setHolidayMap] = useState<Record<string, string>>({});
-  const [saturdayBlue, setSaturdayBlue] = useState<boolean>(true);
-  const [expandLunarBlocks, setExpandLunarBlocks] = useState<boolean>(true);
-  const [useAltHolidays, setUseAltHolidays] = useState<boolean>(true);
-
-  /* ICS 자동 불러오기 */
-  const [holidayYear, setHolidayYear] =
-    useState<number>(new Date().getFullYear());
-  const [icsUrl, setIcsUrl] = useState<string>(
+  const [saturdayBlue, setSaturdayBlue] = useState(true);
+  const [expandLunarBlocks, setExpandLunarBlocks] = useState(true);
+  const [useAltHolidays, setUseAltHolidays] = useState(true);
+  const [holidayYear, setHolidayYear] = useState(new Date().getFullYear());
+  const [icsUrl, setIcsUrl] = useState(
     "https://calendar.google.com/calendar/ical/ko.south_korea%23holiday%40group.v.calendar.google.com/public/basic.ics"
   );
   const [loadingICS, setLoadingICS] = useState(false);
 
-  /* 하단 설정 패널 토글(클릭으로만 열림) */
+  /* 설정 패널 토글 */
   const [showSettings, setShowSettings] = useState(false);
 
-  /* 다크모드 적용 */
+  /* 다크 모드 */
   useEffect(() => {
     document.documentElement.classList.toggle("dark", isDark);
   }, [isDark]);
 
-  /* 로드 */
+  /* 로컬 저장/복구 */
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
-      const data = JSON.parse(raw);
+      const d = JSON.parse(raw);
 
-      if (data.events) setEvents(data.events);
-      if (data.todos) setTodos(data.todos);
-      if (data.selectedDate) setSelectedDate(new Date(data.selectedDate));
-      if (data.currentDate) setCurrentDate(new Date(data.currentDate));
+      if (d.events) setEvents(d.events);
+      if (d.todos) setTodos(d.todos);
+      if (d.selectedDate) setSelectedDate(new Date(d.selectedDate));
+      if (d.currentDate) setCurrentDate(new Date(d.currentDate));
 
-      if (data.theme) {
-        const t = data.theme;
-        setAccentColor(t.accentColor ?? accentColor);
-        setGlobalBg1(t.globalBg1 ?? globalBg1);
-        setGlobalBg2(t.globalBg2 ?? globalBg2);
-        setGlobalBgImage(t.globalBgImage ?? "");
-        setContainerOpacity(t.containerOpacity ?? containerOpacity);
-        setRadius(t.radius ?? radius);
-        setFontScale(t.fontScale ?? fontScale);
-        setShowBorders(t.showBorders ?? showBorders);
-        setIsDark(t.isDark ?? isDark);
+      if (d.theme) {
+        setAccentColor(d.theme.accentColor ?? "#3b82f6");
+        setGlobalBg1(d.theme.globalBg1 ?? "#667eea");
+        setGlobalBg2(d.theme.globalBg2 ?? "#764ba2");
+        setGlobalBgImage(d.theme.globalBgImage ?? "");
+        setContainerOpacity(d.theme.containerOpacity ?? 0.92);
+        setRadius(d.theme.radius ?? 8);
+        setFontScale(d.theme.fontScale ?? 1);
+        setShowBorders(d.theme.showBorders ?? true);
+        setIsDark(d.theme.isDark ?? false);
       }
-
-      if (data.header) {
-        const h = data.header;
-        setHeaderTitle(h.headerTitle ?? headerTitle);
-        setHeaderImage(h.headerImage ?? "");
-        setHeaderBg(h.headerBg ?? headerBg);
-        setHeaderText(h.headerText ?? headerText);
-        setHeaderAlign(h.headerAlign ?? headerAlign);
+      if (d.header) {
+        setHeaderTitle(d.header.headerTitle ?? "나의 플래너");
+        setHeaderImage(d.header.headerImage ?? "");
+        setHeaderBg(d.header.headerBg ?? "#ffffff");
+        setHeaderText(d.header.headerText ?? "#1f2937");
+        setHeaderAlign(d.header.headerAlign ?? "left");
       }
-
-      if (data.cards) {
-        const c = data.cards;
-        setTimeCardBgColor(c.timeCardBgColor ?? timeCardBgColor);
-        setTimeCardBgImg(c.timeCardBgImg ?? "");
-        setTimeBoxColor(c.timeBoxColor ?? timeBoxColor);
-        setTimeBoxImg(c.timeBoxImg ?? "");
-        setTodoBgColor(c.todoBgColor ?? todoBgColor);
-        setTodoBgImg(c.todoBgImg ?? "");
-        setTimeDecorImg(c.timeDecorImg ?? "");
-        setTimeDecorRatio(c.timeDecorRatio ?? "3/1");
+      if (d.cards) {
+        setTimeCardBgColor(d.cards.timeCardBgColor ?? "#f3f4f6");
+        setTimeCardBgImg(d.cards.timeCardBgImg ?? "");
+        setTimeBoxColor(d.cards.timeBoxColor ?? "#3b82f6");
+        setTimeBoxImg(d.cards.timeBoxImg ?? "");
+        setTodoBgColor(d.cards.todoBgColor ?? "#f3f4f6");
+        setTodoBgImg(d.cards.todoBgImg ?? "");
+        setTimeDecorImg(d.cards.timeDecorImg ?? "");
+        setTimeDecorRatio(d.cards.timeDecorRatio ?? "3/1");
       }
-
-      if (data.calendar) {
-        const cal = data.calendar;
-        setCalendarBgColor(cal.calendarBgColor ?? calendarBgColor);
-        setCalendarBgImg(cal.calendarBgImg ?? "");
-        setCellHeight(cal.cellHeight ?? cellHeight);
-        setWeekdaySize(cal.weekdaySize ?? weekdaySize);
-        setDateNumSize(cal.dateNumSize ?? dateNumSize);
-        setEventTextSize(cal.eventTextSize ?? eventTextSize);
-        setMaxEventsPerCell(cal.maxEventsPerCell ?? maxEventsPerCell);
-        setHighlightToday(cal.highlightToday ?? highlightToday);
-        setCalendarGap(cal.calendarGap ?? calendarGap);
-        setBadgeStyle(cal.badgeStyle ?? "dot");
-        setStartOnMonday(cal.startOnMonday ?? startOnMonday);
+      if (d.calendar) {
+        setCalendarBgColor(d.calendar.calendarBgColor ?? "#ffffff");
+        setCalendarBgImg(d.calendar.calendarBgImg ?? "");
+        setCellHeight(d.calendar.cellHeight ?? 86);
+        setWeekdaySize(d.calendar.weekdaySize ?? 0.95);
+        setDateNumSize(d.calendar.dateNumSize ?? 1.0);
+        setEventTextSize(d.calendar.eventTextSize ?? 0.9);
+        setMaxEventsPerCell(d.calendar.maxEventsPerCell ?? 3);
+        setHighlightToday(d.calendar.highlightToday ?? true);
+        setCalendarGap(d.calendar.calendarGap ?? 6);
+        setBadgeStyle(d.calendar.badgeStyle ?? "dot");
+        setStartOnMonday(d.calendar.startOnMonday ?? false);
       }
-
-      if (data.holidays) {
-        setHolidayText(data.holidays.holidayText ?? "");
-        setSaturdayBlue(data.holidays.saturdayBlue ?? true);
-        setHolidayYear(data.holidays.holidayYear ?? new Date().getFullYear());
-        setIcsUrl(data.holidays.icsUrl ?? icsUrl);
-        setExpandLunarBlocks(data.holidays.expandLunarBlocks ?? true);
-        setUseAltHolidays(data.holidays.useAltHolidays ?? true);
-        setHolidayMap(data.holidays.holidayMap ?? {});
+      if (d.holidays) {
+        setHolidayText(d.holidays.holidayText ?? "");
+        setSaturdayBlue(d.holidays.saturdayBlue ?? true);
+        setHolidayYear(d.holidays.holidayYear ?? new Date().getFullYear());
+        setIcsUrl(d.holidays.icsUrl ?? icsUrl);
+        setExpandLunarBlocks(d.holidays.expandLunarBlocks ?? true);
+        setUseAltHolidays(d.holidays.useAltHolidays ?? true);
+        setHolidayMap(d.holidays.holidayMap ?? {});
       }
-    } catch {}
+    } catch {
+      // ignore
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* 저장 */
   useEffect(() => {
     const payload = {
-      version: 7,
       currentDate: currentDate.toISOString(),
       selectedDate: selectedDate.toISOString(),
       events,
@@ -318,29 +295,68 @@ const CalendarPlanner: React.FC = () => {
     };
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    } catch {}
+    } catch {
+      // ignore
+    }
   }, [
-    currentDate, selectedDate, events, todos,
-    accentColor, globalBg1, globalBg2, globalBgImage, containerOpacity, radius, fontScale, showBorders, isDark,
-    headerTitle, headerImage, headerBg, headerText, headerAlign,
-    timeCardBgColor, timeCardBgImg, timeBoxColor, timeBoxImg, todoBgColor, todoBgImg, timeDecorImg, timeDecorRatio,
-    calendarBgColor, calendarBgImg, cellHeight, weekdaySize, dateNumSize, eventTextSize, maxEventsPerCell, highlightToday, calendarGap, badgeStyle, startOnMonday,
-    holidayText, saturdayBlue, holidayYear, icsUrl, expandLunarBlocks, useAltHolidays, holidayMap
+    currentDate,
+    selectedDate,
+    events,
+    todos,
+    accentColor,
+    globalBg1,
+    globalBg2,
+    globalBgImage,
+    containerOpacity,
+    radius,
+    fontScale,
+    showBorders,
+    isDark,
+    headerTitle,
+    headerImage,
+    headerBg,
+    headerText,
+    headerAlign,
+    timeCardBgColor,
+    timeCardBgImg,
+    timeBoxColor,
+    timeBoxImg,
+    todoBgColor,
+    todoBgImg,
+    timeDecorImg,
+    timeDecorRatio,
+    calendarBgColor,
+    calendarBgImg,
+    cellHeight,
+    weekdaySize,
+    dateNumSize,
+    eventTextSize,
+    maxEventsPerCell,
+    highlightToday,
+    calendarGap,
+    badgeStyle,
+    startOnMonday,
+    holidayText,
+    saturdayBlue,
+    holidayYear,
+    icsUrl,
+    expandLunarBlocks,
+    useAltHolidays,
+    holidayMap,
   ]);
 
-  /* refs */
-  const refGlobalBg = useRef<HTMLInputElement | null>(null);
-  const refHeaderImg = useRef<HTMLInputElement | null>(null);
-  const refImportJson = useRef<HTMLInputElement | null>(null);
-  const refIcsFile = useRef<HTMLInputElement | null>(null);
-  const refTimeDecorImg = useRef<HTMLInputElement | null>(null);
-  const refTimeCardImg = useRef<HTMLInputElement | null>(null);
-  const refTimeBoxImg = useRef<HTMLInputElement | null>(null);
-  const refTodoImg = useRef<HTMLInputElement | null>(null);
-  const refCalendarImg = useRef<HTMLInputElement | null>(null);
+  /* ref들 */
+  const refGlobalBg = useRef<HTMLInputElement>(null);
+  const refHeaderImg = useRef<HTMLInputElement>(null);
+  const refImportJson = useRef<HTMLInputElement>(null);
+  const refIcsFile = useRef<HTMLInputElement>(null);
+  const refTimeDecorImg = useRef<HTMLInputElement>(null);
+  const refTimeCardImg = useRef<HTMLInputElement>(null);
+  const refTimeBoxImg = useRef<HTMLInputElement>(null);
+  const refTodoImg = useRef<HTMLInputElement>(null);
+  const refCalendarImg = useRef<HTMLInputElement>(null);
 
-  /* 파일 로더 */
-  const loadAsDataURL = (f: File, setter: (v: string) => void) => {
+  const loadDataUrl = (f: File, setter: (s: string) => void) => {
     const r = new FileReader();
     r.onload = (e) => setter(String(e.target?.result || ""));
     r.readAsDataURL(f);
@@ -351,8 +367,9 @@ const CalendarPlanner: React.FC = () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    const ts = new Date().toISOString().replace(/[:.]/g, "-");
-    a.download = `planner-backup-${ts}.json`;
+    a.download = `planner-backup-${new Date()
+      .toISOString()
+      .replace(/[:.]/g, "-")}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -364,7 +381,7 @@ const CalendarPlanner: React.FC = () => {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
         window.location.reload();
       } catch {
-        alert("가져오기 실패: 잘못된 JSON 파일입니다.");
+        alert("JSON 가져오기 실패");
       }
     };
     r.readAsText(file, "utf-8");
@@ -375,23 +392,22 @@ const CalendarPlanner: React.FC = () => {
     window.location.reload();
   };
 
-  /* ICS 가져오기 */
   const importHolidaysFromUrl = async () => {
     if (!icsUrl) return;
     setLoadingICS(true);
     try {
       const res = await fetch(icsUrl);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const text = await res.text();
-      const fetched = holidayMapFromICS(text, holidayYear);
+      if (!res.ok) throw new Error(String(res.status));
+      const txt = await res.text();
+      const fetched = mapFromICS(txt, holidayYear);
       if (!Object.keys(fetched).length) {
-        alert("해당 연도 이벤트가 없거나 ICS에 포함되지 않았습니다.");
-        return;
+        alert("해당 연도 일정이 없습니다.");
+      } else {
+        setHolidayMap((p) => ({ ...p, ...fetched }));
+        alert(`불러오기 완료: ${Object.keys(fetched).length}건`);
       }
-      setHolidayMap((prev) => ({ ...prev, ...fetched }));
-      alert(`불러오기 완료: ${Object.keys(fetched).length}건`);
     } catch {
-      alert("실패(CORS 등). 링크에서 .ics 저장 후 ‘ICS 파일 업로드’를 이용하세요.");
+      alert("실패(CORS 등). .ics를 내려받아 파일 업로드를 이용하세요.");
     } finally {
       setLoadingICS(false);
     }
@@ -399,76 +415,65 @@ const CalendarPlanner: React.FC = () => {
   const importHolidaysFromFile = (file: File) => {
     const r = new FileReader();
     r.onload = (e) => {
-      try {
-        const text = String(e.target?.result || "");
-        const fetched = holidayMapFromICS(text, holidayYear);
-        if (!Object.keys(fetched).length) {
-          alert("해당 연도 이벤트가 없거나 파일 형식이 올바르지 않습니다.");
-          return;
-        }
-        setHolidayMap((prev) => ({ ...prev, ...fetched }));
-        alert(`불러오기 완료: ${Object.keys(fetched).length}건`);
-      } catch {
-        alert("ICS 파싱 실패: 유효한 파일인지 확인하세요.");
+      const txt = String(e.target?.result || "");
+      const fetched = mapFromICS(txt, holidayYear);
+      if (!Object.keys(fetched).length) {
+        alert("유효한 .ics가 아니거나 해당 연도 데이터가 없습니다.");
+        return;
       }
+      setHolidayMap((p) => ({ ...p, ...fetched }));
+      alert(`불러오기 완료: ${Object.keys(fetched).length}건`);
     };
     r.readAsText(file, "utf-8");
   };
 
-  /* 달력 날짜 */
+  /* 날짜 계산 */
   const weekdayNames = startOnMonday
     ? ["월", "화", "수", "목", "금", "토", "일"]
     : ["일", "월", "화", "수", "목", "금", "토"];
 
-  const makeDays = () => {
+  const calendarDays = useMemo(() => {
     const y = currentDate.getFullYear();
     const m = currentDate.getMonth();
     const first = new Date(y, m, 1);
     const firstIndex = startOnMonday ? (first.getDay() + 6) % 7 : first.getDay();
     const start = new Date(first);
     start.setDate(start.getDate() - firstIndex);
-    const arr: Date[] = [];
-    const end = new Date(start);
-    end.setDate(end.getDate() + 41);
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      arr.push(new Date(d));
-    }
-    return arr;
-  };
-  const days = makeDays();
+    const days: Date[] = [];
+    for (let i = 0; i < 42; i++) days.push(addDays(start, i));
+    return days;
+  }, [currentDate, startOnMonday]);
 
-  /* 휴일 계산 */
-  const manualMap = useMemo(() => {
+  /* 휴일 */
+  const manualHoliday = useMemo(() => {
     const out: Record<string, string> = {};
     (holidayText || "")
-      .split(/[,\n\s]+/)
+      .split(/[,\s\n]+/)
       .map((v) => v.trim())
       .filter(Boolean)
-      .forEach((d) => (out[d] = out[d] || "휴일"));
+      .forEach((d) => (out[d] = "휴일"));
     return out;
   }, [holidayText]);
 
   const baseHolidayMap = useMemo(
-    () => ({ ...manualMap, ...holidayMap }),
-    [manualMap, holidayMap]
+    () => ({ ...manualHoliday, ...holidayMap }),
+    [manualHoliday, holidayMap]
   );
 
-  const effectiveHolidaySet = useMemo(() => {
+  const holidaySet = useMemo(() => {
     const set = new Set<string>(Object.keys(baseHolidayMap));
-    // 설/추석 전·후 1일 확장
+    // 설/추석 전후 1일
     if (expandLunarBlocks) {
-      Object.entries(baseHolidayMap).forEach(([d, name]) => {
-        if (!name) return;
-        if (/(설날|설|추석)/.test(name)) {
-          const [y, m, dd] = d.split("-").map(Number);
-          const base = new Date(y, (m ?? 1) - 1, dd ?? 1);
-          [addDays(base, -1), addDays(base, +1)].forEach((x) =>
-            set.add(keyOf(x))
-          );
+      Object.entries(baseHolidayMap).forEach(([k, name]) => {
+        if (/(설날|설|추석)/.test(name || "")) {
+          const [y, m, d] = k.split("-").map(Number);
+          const base = new Date(y, (m || 1) - 1, d || 1);
+          set.add(dateKey(addDays(base, -1)));
+          set.add(dateKey(addDays(base, +1)));
         }
       });
     }
-    // 대체공휴일(간이)
+    // 대체공휴일(간단)
     if (useAltHolidays) {
       const isWeekend = (dt: Date) => [0, 6].includes(dt.getDay());
       const nextWeekday = (dt: Date) => {
@@ -477,15 +482,15 @@ const CalendarPlanner: React.FC = () => {
         while ([0, 6].includes(t.getDay()));
         return t;
       };
-      Object.entries(baseHolidayMap).forEach(([d, name]) => {
-        const [y, m, dd] = d.split("-").map(Number);
-        const date = new Date(y, (m ?? 1) - 1, dd ?? 1);
-        if (date.getDay() === 0) set.add(keyOf(nextWeekday(date))); // 일요일
-        if (/어린이날/.test(name) || (m === 5 && dd === 5)) {
-          if (isWeekend(date)) set.add(keyOf(nextWeekday(date)));
+      Object.entries(baseHolidayMap).forEach(([k, name]) => {
+        const [y, m, d] = k.split("-").map(Number);
+        const dt = new Date(y, (m || 1) - 1, d || 1);
+        if (dt.getDay() === 0) set.add(dateKey(nextWeekday(dt)));
+        if (/어린이날/.test(name || "") || (m === 5 && d === 5)) {
+          if (isWeekend(dt)) set.add(dateKey(nextWeekday(dt)));
         }
-        if (/(설날|설|추석)/.test(name) && isWeekend(date)) {
-          set.add(keyOf(nextWeekday(date)));
+        if (/(설날|설|추석)/.test(name || "") && isWeekend(dt)) {
+          set.add(dateKey(nextWeekday(dt)));
         }
       });
     }
@@ -494,32 +499,29 @@ const CalendarPlanner: React.FC = () => {
 
   const isSunday = (d: Date) => d.getDay() === 0;
   const isSaturday = (d: Date) => d.getDay() === 6;
-  const isHoliday = (d: Date) => effectiveHolidaySet.has(keyOf(d)) || isSunday(d);
+  const isHoliday = (d: Date) => holidaySet.has(dateKey(d)) || isSunday(d);
 
-  /* 선택된 날짜 */
-  const selectedKey = keyOf(selectedDate);
-  const selectedList = events[selectedKey] || [];
+  /* CRUD */
+  const selectedKey = dateKey(selectedDate);
+  const selectedEvents = events[selectedKey] || [];
 
-  /* 일정/할일 CRUD */
   const addEvent = () => {
-    if (!newEvent.trim()) return;
-    const k = keyOf(selectedDate);
+    const text = newEvent.trim();
+    if (!text) return;
+    const k = selectedKey;
     setEvents((p) => ({
       ...p,
-      [k]: [
-        ...(p[k] || []),
-        { id: Date.now(), text: newEvent.trim(), color: accentColor },
-      ],
+      [k]: [...(p[k] || []), { id: Date.now(), text, color: accentColor }],
     }));
     setNewEvent("");
   };
-  const delEvent = (k: string, id: number) =>
+  const deleteEvent = (k: string, id: number) => {
     setEvents((p) => {
-      const next = { ...p };
-      next[k] = (p[k] || []).filter((e) => e.id !== id);
+      const next = { ...p, [k]: (p[k] || []).filter((e) => e.id !== id) };
       if (!next[k]?.length) delete next[k];
       return next;
     });
+  };
   const editEventText = (k: string, id: number, text: string) => {
     setEvents((p) => ({
       ...p,
@@ -528,24 +530,24 @@ const CalendarPlanner: React.FC = () => {
     setEditingEvent(null);
   };
   const addTodo = () => {
-    if (!newTodo.trim()) return;
+    const text = newTodo.trim();
+    if (!text) return;
     setTodos((p) => [
       ...p,
-      { id: Date.now(), text: newTodo.trim(), completed: false, color: accentColor },
+      { id: Date.now(), text, completed: false, color: accentColor },
     ]);
     setNewTodo("");
   };
   const toggleTodo = (id: number) =>
     setTodos((p) => p.map((t) => (t.id === id ? { ...t, completed: !t.completed } : t)));
-  const delTodo = (id: number) => setTodos((p) => p.filter((t) => t.id !== id));
+  const deleteTodo = (id: number) => setTodos((p) => p.filter((t) => t.id !== id));
 
-  /* 공통 스타일 */
+  /* 스타일 공통 */
   const border = showBorders
     ? `1px solid ${hexToRgba(accentColor, 0.6)}`
     : "1px solid transparent";
   const cardBg = (hex: string) => hexToRgba(hex, containerOpacity);
 
-  /* 헤더 2.5배 */
   const headerCardStyle: React.CSSProperties = {
     border,
     borderRadius: radius,
@@ -582,14 +584,13 @@ const CalendarPlanner: React.FC = () => {
     backgroundPosition: "center",
   };
 
-  /* 렌더 */
   return (
     <div
       className="min-h-screen p-3 sm:p-4 dark:bg-slate-900"
       style={{
         backgroundImage: globalBgImage
           ? `url(${globalBgImage})`
-          : `linear-gradient(135deg, ${globalBg1} 0%, ${globalBg2} 100%)`,
+          : `linear-gradient(135deg, ${globalBg1}, ${globalBg2})`,
         backgroundSize: "cover",
         backgroundPosition: "center",
         backgroundAttachment: "fixed",
@@ -597,15 +598,12 @@ const CalendarPlanner: React.FC = () => {
       }}
     >
       <div className="max-w-7xl mx-auto">
-        {/* ---------------- 헤더 ---------------- */}
+        {/* ---- 헤더 ---- */}
         <div className="relative mb-3 sm:mb-4">
           <div className="relative overflow-hidden shadow-sm" style={headerCardStyle}>
             {headerImage && <div className="absolute inset-0 bg-black/15 dark:bg-black/30" />}
             <div className="relative z-10 px-3 py-4 sm:px-6 sm:py-6">
-              <div
-                className="w-full flex items-start justify-between gap-3"
-                style={{ textAlign: headerAlign }}
-              >
+              <div className="w-full flex items-start justify-between gap-3" style={{ textAlign: headerAlign as any }}>
                 <div className="flex-1">
                   {editHeader ? (
                     <input
@@ -616,7 +614,6 @@ const CalendarPlanner: React.FC = () => {
                       className="font-semibold bg-transparent border-2 border-dashed border-white/40 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 w-full"
                       style={{ color: headerText, fontSize: "2em", borderRadius: radius }}
                       autoFocus
-                      type="text"
                     />
                   ) : (
                     <h1
@@ -628,7 +625,6 @@ const CalendarPlanner: React.FC = () => {
                     </h1>
                   )}
                 </div>
-
                 <button
                   onClick={() => setIsDark((v) => !v)}
                   className="px-3 py-2 bg-white/90 dark:bg-slate-800 dark:text-gray-100 hover:bg-white"
@@ -641,7 +637,7 @@ const CalendarPlanner: React.FC = () => {
             </div>
           </div>
 
-          {/* 헤더 설정(클릭으로만 열림) */}
+          {/* 헤더 설정 – 클릭으로만 열림 */}
           <div className="absolute -top-2 -right-2 z-30">
             <button
               onClick={() => setShowHeaderSettings((v) => !v)}
@@ -694,11 +690,21 @@ const CalendarPlanner: React.FC = () => {
                 <div className="grid grid-cols-2 gap-2 mb-3">
                   <div className="flex items-center gap-2 p-2" style={{ border, borderRadius: radius }}>
                     <span className="text-xs">글자색</span>
-                    <input type="color" value={headerText} onChange={(e) => setHeaderText(e.target.value)} className="w-7 h-7 cursor-pointer" />
+                    <input
+                      type="color"
+                      value={headerText}
+                      onChange={(e) => setHeaderText(e.target.value)}
+                      className="w-7 h-7 cursor-pointer ml-auto"
+                    />
                   </div>
                   <div className="flex items-center gap-2 p-2" style={{ border, borderRadius: radius }}>
                     <span className="text-xs">배경색</span>
-                    <input type="color" value={headerBg} onChange={(e) => setHeaderBg(e.target.value)} className="w-7 h-7 cursor-pointer" />
+                    <input
+                      type="color"
+                      value={headerBg}
+                      onChange={(e) => setHeaderBg(e.target.value)}
+                      className="w-7 h-7 cursor-pointer ml-auto"
+                    />
                   </div>
                 </div>
 
@@ -726,7 +732,7 @@ const CalendarPlanner: React.FC = () => {
                       type="file"
                       accept="image/*"
                       onChange={(e) =>
-                        e.target.files?.[0] && loadAsDataURL(e.target.files[0], setHeaderImage)
+                        e.target.files?.[0] && loadDataUrl(e.target.files[0], setHeaderImage)
                       }
                       className="hidden"
                     />
@@ -745,11 +751,11 @@ const CalendarPlanner: React.FC = () => {
           </div>
         </div>
 
-        {/* ---------------- 메인 그리드 ---------------- */}
+        {/* ---- 메인 레이아웃 ---- */}
         <div className="grid grid-cols-12 gap-3">
           {/* 좌측: 현재 시각 + 할 일 */}
           <div className="col-span-12 lg:col-span-4">
-            {/* 현재 시각 카드 (표시만, 상단 꾸미기 상자 포함) */}
+            {/* 현재 시각 카드 */}
             <div className="relative overflow-hidden p-4 mb-3" style={timeCardStyle}>
               {timeCardBgImg && <div className="absolute inset-0 bg-black/25" />}
               <div className="relative z-10">
@@ -757,7 +763,7 @@ const CalendarPlanner: React.FC = () => {
                   <Calendar size={20} /> 현재 시각
                 </h3>
 
-                {/* 꾸미기 상자 (이미지 표시만) */}
+                {/* 꾸미기 상자 */}
                 <div
                   className="w-full overflow-hidden mb-3"
                   style={{
@@ -769,10 +775,9 @@ const CalendarPlanner: React.FC = () => {
                     backgroundSize: "cover",
                     backgroundPosition: "center",
                   }}
-                  aria-label="꾸미기 이미지 영역"
                 />
 
-                {/* 시간 박스 (HH:MM:SS만) */}
+                {/* 시간 박스 (HH:MM:SS) */}
                 <div
                   className="mx-auto flex items-center justify-center text-white font-mono font-bold"
                   style={{
@@ -788,7 +793,6 @@ const CalendarPlanner: React.FC = () => {
                     width: "100%",
                     fontSize: "2.2em",
                   }}
-                  aria-label="현재 시각"
                 >
                   {pad2(now.getHours())}:{pad2(now.getMinutes())}:{pad2(now.getSeconds())}
                 </div>
@@ -848,7 +852,7 @@ const CalendarPlanner: React.FC = () => {
                         {t.text}
                       </span>
                       <button
-                        onClick={() => delTodo(t.id)}
+                        onClick={() => deleteTodo(t.id)}
                         className="p-1.5 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20"
                         style={{ border, borderRadius: radius }}
                         aria-label="할 일 삭제"
@@ -898,7 +902,7 @@ const CalendarPlanner: React.FC = () => {
                 </div>
               </div>
 
-              {/* 요일 헤더 */}
+              {/* 요일 */}
               <div className="grid grid-cols-7 mb-2" style={{ gap: calendarGap }}>
                 {weekdayNames.map((d) => (
                   <div
@@ -913,22 +917,21 @@ const CalendarPlanner: React.FC = () => {
 
               {/* 날짜 그리드 */}
               <div className="grid grid-cols-7 mb-3" style={{ gap: calendarGap }}>
-                {days.map((day) => {
-                  const k = keyOf(day);
-                  const list = events[k] || [];
+                {calendarDays.map((day) => {
+                  const k = dateKey(day);
+                  const dayEvents = events[k] || [];
                   const isToday = day.toDateString() === new Date().toDateString();
                   const isSelected = day.toDateString() === selectedDate.toDateString();
                   const isCurMonth = day.getMonth() === currentDate.getMonth();
 
                   const baseBg = isCurMonth ? "rgba(255,255,255,0.8)" : "rgba(245,245,245,0.7)";
-                  const numberColor =
-                    isHoliday(day)
-                      ? "#dc2626"
-                      : isSaturday(day) && saturdayBlue
-                      ? "#2563eb"
-                      : isToday && highlightToday
-                      ? accentColor
-                      : "inherit";
+                  const numberColor = isHoliday(day)
+                    ? "#dc2626"
+                    : isSaturday(day) && saturdayBlue
+                    ? "#2563eb"
+                    : isToday && highlightToday
+                    ? accentColor
+                    : "inherit";
 
                   return (
                     <button
@@ -953,7 +956,7 @@ const CalendarPlanner: React.FC = () => {
                       </div>
 
                       <div className="space-y-0.5">
-                        {list.slice(0, maxEventsPerCell).map((ev) => {
+                        {dayEvents.slice(0, maxEventsPerCell).map((ev) => {
                           if (badgeStyle === "dot") {
                             return (
                               <div
@@ -986,7 +989,6 @@ const CalendarPlanner: React.FC = () => {
                               </div>
                             );
                           }
-                          // strip
                           return (
                             <div
                               key={ev.id}
@@ -1005,11 +1007,11 @@ const CalendarPlanner: React.FC = () => {
                             </div>
                           );
                         })}
-                        {list.length > maxEventsPerCell && (
+                        {dayEvents.length > maxEventsPerCell && (
                           <div className="opacity-70" style={{ fontSize: `${eventTextSize}em` }}>
-                            +{list.length - maxEventsPerCell}
+                            +{dayEvents.length - maxEventsPerCell}
                           </div>
-                        })}
+                        )}
                       </div>
                     </button>
                   );
@@ -1042,7 +1044,7 @@ const CalendarPlanner: React.FC = () => {
                 </div>
 
                 <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-                  {selectedList.map((ev) => (
+                  {selectedEvents.map((ev) => (
                     <div
                       key={ev.id}
                       className="flex items-center gap-2 p-2 bg-gray-50 dark:bg-slate-800"
@@ -1082,7 +1084,7 @@ const CalendarPlanner: React.FC = () => {
                         <Edit3 size={12} />
                       </button>
                       <button
-                        onClick={() => delEvent(selectedKey, ev.id)}
+                        onClick={() => deleteEvent(selectedKey, ev.id)}
                         className="p-1 text-red-700 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-900/20"
                         style={{ border, borderRadius: radius }}
                         aria-label="일정 삭제"
@@ -1091,7 +1093,7 @@ const CalendarPlanner: React.FC = () => {
                       </button>
                     </div>
                   ))}
-                  {!selectedList.length && (
+                  {!selectedEvents.length && (
                     <p className="text-center opacity-70 py-5 text-sm">일정이 없습니다.</p>
                   )}
                 </div>
@@ -1100,7 +1102,7 @@ const CalendarPlanner: React.FC = () => {
           </div>
         </div>
 
-        {/* ---------------- 하단 설정(클릭으로만 열림, 컴팩트) ---------------- */}
+        {/* ---- 하단 설정 (토글) ---- */}
         <div className="mt-4">
           <button
             onClick={() => setShowSettings((s) => !s)}
@@ -1132,7 +1134,9 @@ const CalendarPlanner: React.FC = () => {
                         localStorage.getItem(STORAGE_KEY) ?? "{}"
                       );
                       alert("현재 상태를 저장했습니다.");
-                    } catch {}
+                    } catch {
+                      // ignore
+                    }
                   }}
                   className="px-2 py-2 bg-gray-100 hover:bg-gray-200 flex items-center justify-center gap-2"
                   style={{ border, borderRadius: radius }}
@@ -1162,7 +1166,7 @@ const CalendarPlanner: React.FC = () => {
                 </button>
               </div>
 
-              {/* 1) 전체 테마 (컴팩트) */}
+              {/* 1) 전체 테마 */}
               <div className="grid gap-2 md:grid-cols-2 mb-3">
                 <div className="grid grid-cols-2 gap-2">
                   <div className="flex items-center gap-2 p-2" style={{ border, borderRadius: radius }}>
@@ -1231,7 +1235,7 @@ const CalendarPlanner: React.FC = () => {
 
                 <div className="grid grid-cols-2 gap-2">
                   <div className="flex items-center gap-2 p-2" style={{ border, borderRadius: radius }}>
-                    <span className="text-sm">배경 그라데이션 1</span>
+                    <span className="text-sm">배경 1</span>
                     <input
                       type="color"
                       value={globalBg1}
@@ -1240,7 +1244,7 @@ const CalendarPlanner: React.FC = () => {
                     />
                   </div>
                   <div className="flex items-center gap-2 p-2" style={{ border, borderRadius: radius }}>
-                    <span className="text-sm">배경 그라데이션 2</span>
+                    <span className="text-sm">배경 2</span>
                     <input
                       type="color"
                       value={globalBg2}
@@ -1270,7 +1274,7 @@ const CalendarPlanner: React.FC = () => {
                 </div>
               </div>
 
-              {/* 2) 현재 시각/꾸미기(컴팩트) */}
+              {/* 2) 현재 시각/꾸미기 */}
               <div className="grid gap-2 md:grid-cols-2 mb-3">
                 <div className="grid grid-cols-2 gap-2">
                   <div className="flex items-center gap-2 p-2 col-span-2" style={{ border, borderRadius: radius }}>
@@ -1361,7 +1365,7 @@ const CalendarPlanner: React.FC = () => {
                   </div>
                 </div>
 
-                {/* 3) 달력/주간/이벤트 크기 */}
+                {/* 3) 달력 크기/시작요일 */}
                 <div className="grid grid-cols-2 gap-2">
                   <div className="flex items-center gap-2 p-2" style={{ border, borderRadius: radius }}>
                     <span className="text-sm">칸 높이</span>
@@ -1463,7 +1467,7 @@ const CalendarPlanner: React.FC = () => {
                 </div>
               </div>
 
-              {/* 4) 휴일/주말/자동 불러오기 (컴팩트) */}
+              {/* 4) 휴일/불러오기 */}
               <div className="grid gap-2 md:grid-cols-2">
                 <div className="grid grid-cols-2 gap-2">
                   <div className="flex items-center gap-2 p-2 col-span-2" style={{ border, borderRadius: radius }}>
@@ -1566,58 +1570,80 @@ const CalendarPlanner: React.FC = () => {
                 ref={refGlobalBg}
                 type="file"
                 accept="image/*"
-                onChange={(e) =>
-                  e.target.files?.[0] && loadAsDataURL(e.target.files[0], setGlobalBgImage)
-                }
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) loadDataUrl(f, setGlobalBgImage);
+                }}
                 className="hidden"
               />
               <input
                 ref={refImportJson}
                 type="file"
                 accept="application/json"
-                onChange={(e) => e.target.files?.[0] && importJSON(e.target.files[0])}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) importJSON(f);
+                }}
                 className="hidden"
               />
               <input
                 ref={refIcsFile}
                 type="file"
                 accept=".ics,text/calendar"
-                onChange={(e) => e.target.files?.[0] && importHolidaysFromFile(e.target.files[0])}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) importHolidaysFromFile(f);
+                }}
                 className="hidden"
               />
               <input
                 ref={refTimeDecorImg}
                 type="file"
                 accept="image/*"
-                onChange={(e) => e.target.files?.[0] && loadAsDataURL(e.target.files[0], setTimeDecorImg)}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) loadDataUrl(f, setTimeDecorImg);
+                }}
                 className="hidden"
               />
               <input
                 ref={refTimeCardImg}
                 type="file"
                 accept="image/*"
-                onChange={(e) => e.target.files?.[0] && loadAsDataURL(e.target.files[0], setTimeCardBgImg)}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) loadDataUrl(f, setTimeCardBgImg);
+                }}
                 className="hidden"
               />
               <input
                 ref={refTimeBoxImg}
                 type="file"
                 accept="image/*"
-                onChange={(e) => e.target.files?.[0] && loadAsDataURL(e.target.files[0], setTimeBoxImg)}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) loadDataUrl(f, setTimeBoxImg);
+                }}
                 className="hidden"
               />
               <input
                 ref={refTodoImg}
                 type="file"
                 accept="image/*"
-                onChange={(e) => e.target.files?.[0] && loadAsDataURL(e.target.files[0], setTodoBgImg)}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) loadDataUrl(f, setTodoBgImg);
+                }}
                 className="hidden"
               />
               <input
                 ref={refCalendarImg}
                 type="file"
                 accept="image/*"
-                onChange={(e) => e.target.files?.[0] && loadAsDataURL(e.target.files[0], setCalendarBgImg)}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) loadDataUrl(f, setCalendarBgImg);
+                }}
                 className="hidden"
               />
             </div>
